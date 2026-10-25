@@ -1,0 +1,48 @@
+name: Build 6 - native library dependency reference inspection
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build6-jni-evidence.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BUILD6_STOCK_ARCHIVE: ${{ github.workspace }}/.build6-evidence/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD6_DEP_REPORT: ${{ github.workspace }}/.build6-evidence/report
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check source and pinned candidate search logic
+        run: |
+          python3 -m py_compile scripts/build6_native_references.py
+      - name: Install required original-image analysis tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux python3
+          python3 scripts/inventory.py --install-tools
+      - name: Download and verify original MIUI 14 fastboot archive
+        run: |
+          mkdir -p "$(dirname "$BUILD6_STOCK_ARCHIVE")" "$BUILD6_DEP_REPORT"
+          python3 scripts/download.py --output "$BUILD6_STOCK_ARCHIVE" --report "$BUILD6_DEP_REPORT/download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD6_STOCK_ARCHIVE" | md5sum -c -
+      - name: Check 7 app-specific libraries for references from retained system components
+        run: |
+          sudo --preserve-env=BUILD6_STOCK_ARCHIVE,BUILD6_DEP_REPORT,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/build6_native_references.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD6_DEP_REPORT"
+          sed -n '1,100p' "$BUILD6_DEP_REPORT/REFERENCE_SUMMARY.md"
+      - name: Upload SHA256-pinned evidence report only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build6-native-library-references
+          path: ${{ github.workspace }}/.build6-evidence/report/
+          retention-days: 30
+          if-no-files-found: warn
