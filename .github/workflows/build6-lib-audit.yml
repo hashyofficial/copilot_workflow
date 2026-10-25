@@ -1,0 +1,61 @@
+name: Build 6 - audit leftover libraries outside removed APK folders
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build6-lib-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit-stock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BUILD6_STOCK_ARCHIVE: ${{ runner.temp }}/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD6_AUDIT_REPORT: ${{ runner.temp }}/build6-library-audit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check complete-folder deletion manifest
+        run: |
+          python3 -m py_compile scripts/build6_lib_audit.py scripts/build5_gallery_targets.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from build5_gallery_targets import targets_from_build4,GALLERY_LOCATION
+          folders,_,protected,_=targets_from_build4()
+          assert len(folders)==108 and GALLERY_LOCATION in folders and len(protected)==3
+          print("Build 6 inherits 108 complete folder deletions and protected stock apps")
+          PY
+      - name: Install EROFS and Android extraction tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux python3
+          python3 scripts/inventory.py --install-tools
+      - name: Download pinned original Xiaomi firmware and verify MD5
+        run: |
+          mkdir -p "$(dirname "$BUILD6_STOCK_ARCHIVE")"
+          python3 scripts/download.py --output "$BUILD6_STOCK_ARCHIVE" --report "$BUILD6_AUDIT_REPORT/download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD6_STOCK_ARCHIVE" | md5sum -c -
+      - name: Analyze removed native libraries and surviving shared-library filename matches
+        run: |
+          sudo --preserve-env=BUILD6_STOCK_ARCHIVE,BUILD6_AUDIT_REPORT,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/build6_lib_audit.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD6_AUDIT_REPORT"
+          python3 - <<'PY'
+          import json,os,pathlib
+          report=json.loads((pathlib.Path(os.environ["BUILD6_AUDIT_REPORT"])/"LIBRARY_CANDIDATES.json").read_text())
+          assert report["removed_complete_folders"]==108 and len(report["removed_apks"])==108
+          print("Candidate leftovers (not yet approved for removal):",len(report["matched_outside_folders"]))
+          PY
+      - name: Upload small audit report, no partition images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build6-leftover-library-audit
+          path: ${{ runner.temp }}/build6-library-audit/
+          if-no-files-found: warn
+          retention-days: 30
