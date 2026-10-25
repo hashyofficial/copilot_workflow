@@ -163,7 +163,7 @@ def copy_entry(zout,info,source):
 def verify_parts(folder):
     manifest=json.loads((folder/"manifest.json").read_text())
     if manifest.get("model")!="yunluo" or manifest.get("slot")!="a" or manifest.get("build")!="6-experimental":fail("Wrong Build 6 source")
-    if manifest.get("total_directories_removed")!=108 or manifest.get("build6_additional_directories_removed")!=1 or not manifest.get("lp_metadata_preserved") or not manifest.get("other_regions_unchanged"):fail("Unverified Build 6 image")
+    if manifest.get("total_directories_removed")!=108 or manifest.get("build5_additional_directories_removed")!=1 or not manifest.get("lp_metadata_preserved") or not manifest.get("other_regions_unchanged"):fail("Unverified Build 6 image")
     cleanup=manifest.get("build6_cleanup_by_partition")
     if not isinstance(cleanup,list) or {x.get("partition") for x in cleanup}!={"product_a","system_a","system_ext_a"}:
         fail("Missing Build 6 per-partition leftover audit")
