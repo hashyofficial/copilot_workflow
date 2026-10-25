@@ -27,7 +27,7 @@ jobs:
       - name: Compile and validate all 108 deletions and three pinned JNI libraries
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/build5_gallery_targets.py scripts/build6_cleanup.py scripts/pack_super_build6.py scripts/repack_build6_fastboot.py
+          python3 -m py_compile scripts/build5_gallery_targets.py scripts/build6_cleanup.py scripts/pack_super_build6.py scripts/repack_build6_fastboot.py scripts/build6_lib_audit.py scripts/build6_native_references.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
           python3 - <<'PY'
           import sys
