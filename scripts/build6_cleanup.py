@@ -10,10 +10,30 @@ import re
 import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
+from inventory import sha
 
 # A short/generic stem is never enough evidence to delete a system library.
 MIN_LIBRARY_STEM = 12
 MIN_CONFIG_STEM = 9
+
+# Build 6 reference-audit run 40204058606 checked 3,233 surviving files and
+# 152,951 decompressed ZIP entries across product_a/system_a/system_ext_a.
+# ONLY these three candidate .so files had zero observed surviving references;
+# all other candidates, including MIUI monitor and voice-command JNI, are kept.
+APPROVED_PINNED_NATIVE = {
+    "/system/lib/libMiraVision_jni.so": (
+        "22b6b8f2641c8d86e1e085ea080209b761f9ffad182be3e7c1e353f2f8589580",
+        "com.mediatek.miravision.ui"
+    ),
+    "/system/lib64/libMiraVision_jni.so": (
+        "5295adb5037f0acebf4729515676b61d17247892020e009aa7c379c3cf53c412",
+        "com.mediatek.miravision.ui"
+    ),
+    "/system/lib64/libprintspooler_jni.so": (
+        "f40d77dabd994155d05f8380cf3d5183b9ddf97b73fa6c90701c94d8efaeb35b",
+        "com.android.printspooler"
+    ),
+}
 
 def normalize(value):
     return re.sub(r"[^a-z0-9]", "", value.casefold())
@@ -78,6 +98,21 @@ def find_cleanup(mount, partition, targets, package_ids, entries, aapt):
         filename = p.name
         if filename.endswith(".so") and any(parent == root or parent.startswith(root + "/")
                 for root in ("/lib", "/lib64", "/system/lib", "/system/lib64")):
+            if partition == "system_a" and path in APPROVED_PINNED_NATIVE:
+                expected_sha, owner = APPROVED_PINNED_NATIVE[path]
+                if owner not in removed_ids:
+                    raise RuntimeError("Build 6 library owner not among deleted APKs: " + path)
+                if sha(mount / path.lstrip("/")) != expected_sha:
+                    raise RuntimeError("Reviewed native library SHA256 mismatch: " + path)
+                linked = [p for p, d in entries.items() if d["kind"] == "symlink"
+                          and not removed_under(p,deleted)
+                          and PurePosixPath(d.get("link","")).name == filename]
+                if linked:
+                    record("native_library",path,[owner],"Still linked from retained firmware: "+str(linked[:8]),False)
+                else:
+                    record("native_library",path,[owner],
+                           "Pinned SHA256, removed-app JNI owner, zero observed retained refs in Build 6 audit",True)
+                continue
             stem = filename[3:-3] if filename.startswith("lib") else filename[:-3]
             key = normalize(stem)
             if len(key) >= MIN_LIBRARY_STEM and key in aliases:
@@ -121,12 +156,14 @@ def find_cleanup(mount, partition, targets, package_ids, entries, aapt):
                 record("overlay", path, [match.group(1)], "Overlay targets only a removed Android package", True)
 
     if pending_libs:
-        used_by_retained = retained_embedded_libs(mount, entries, deleted)
         for path, owners in pending_libs:
-            if PurePosixPath(path).name in used_by_retained:
-                record("native_library", path, owners, "Same library basename bundled by a retained APK", False)
-            else:
-                record("native_library", path, owners, "Strong, exact removed-app stem; no retained APK bundles same library", True)
+            record("native_library",path,owners,
+                   "Unreviewed library filename similarity is insufficient proof of exclusive ownership",False)
+    if partition=="system_a":
+        selected_pins={item["path"] for item in selected if item["kind"]=="native_library"}
+        expected_pins=set(APPROVED_PINNED_NATIVE)
+        if selected_pins!=expected_pins:
+            raise RuntimeError("Not all three SHA256-reviewed Build 6 JNI libraries can safely be excluded")
     paths = [item["path"] for item in selected]
     if len(paths) != len(set(paths)):
         raise RuntimeError("Duplicate Build 6 exclusion")
