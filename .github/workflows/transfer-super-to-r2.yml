@@ -1,56 +1,204 @@
-name: Transfer existing super.img candidate to Cloudflare R2
+name: Redmi Pad Build 5 — original fastboot ROM, Gallery folder removed (108 total)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build5-full-firmware.yml
   workflow_dispatch:
-    inputs:
-      r2_account_id:
-        description: 'Cloudflare Account ID (32 hex characters; not a secret)'
-        required: true
-        type: string
-      r2_bucket:
-        description: 'Existing R2 bucket name'
-        required: true
-        type: string
-      r2_object_key:
-        description: 'Destination object path in R2'
-        required: true
-        default: 'yunluo/V14.0.4.0.TLYMIXM/super.sparse.img'
-        type: string
 
 permissions:
-  contents: read
-  actions: read
+  contents: write
 
 jobs:
-  transfer:
+  full-firmware:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: auto
-      AWS_EC2_METADATA_DISABLED: 'true'
-      SOURCE_DIR: ${{ runner.temp }}/yunluo-source
-      R2_ACCOUNT_ID: ${{ inputs.r2_account_id }}
-      R2_BUCKET: ${{ inputs.r2_bucket }}
-      R2_OBJECT_KEY: ${{ inputs.r2_object_key }}
+      BUILD5_STOCK_ARCHIVE: ${{ github.workspace }/.build5-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD5_PRIVATE: ${{ github.workspace }/.build5-work/private-super-NOT-UPLOADED
+      BUILD5_REPORTS: ${{ github.workspace }}/.build5-work/report
+      ROM_NAME: yunluo_MIUI14_Global_Build5_108Folders_GalleryRemoved_AVBDisabled_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build5-complete-firmware
     steps:
       - uses: actions/checkout@v4
-      - name: Verify credentials are configured without printing them
+      - name: Compile Build 5 and verify exactly 108 complete APK-folder removals
         run: |
-          test -n "$AWS_ACCESS_KEY_ID" || { echo 'Missing Actions secret R2_ACCESS_KEY_ID'; exit 1; }
-          test -n "$AWS_SECRET_ACCESS_KEY" || { echo 'Missing Actions secret R2_SECRET_ACCESS_KEY'; exit 1; }
-          python3 -m py_compile scripts/publish_super_r2.py
-          gh --version
-          aws --version
+          set -euo pipefail
+          python3 -m py_compile scripts/build5_gallery_targets.py scripts/pack_super_build5.py scripts/repack_build5_fastboot.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from build5_gallery_targets import targets_from_build4,GALLERY_LOCATION
+          d,p,r,n=targets_from_build4()
+          assert len(d)==108 and len(n)==15 and GALLERY_LOCATION in d and len(r)==3
+          assert all(apk.parent != '/system/app/Photos' for _,apk in d.values())
+          print("Verified 108 original app folders; all 3 previously protected apps remain protected")
+          PY
           df -h "$RUNNER_TEMP"
-      - name: Download completed 24-app super image artifact (no rebuild)
+      - name: Install stock ROM and EROFS utilities
         run: |
-          mkdir -p "$SOURCE_DIR"
-          gh run download 39917200399 -R "$GH_REPO" \
-            -n yunluo-miui14-slot-a-super-candidate -D "$SOURCE_DIR"
-          ls -lh "$SOURCE_DIR"/super.sparse.img.part-* "$SOURCE_DIR"/manifest.json
-      - name: Verify SHA-256 and stream multipart upload to Cloudflare R2
-        run: python3 scripts/publish_super_r2.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip liblp-utils
+          python3 scripts/inventory.py --install-tools
+      - name: Download and verify ORIGINAL Xiaomi global MIUI firmware
+        run: |
+          mkdir -p "$BUILD5_REPORTS"
+          python3 scripts/download.py \
+            --output "$BUILD5_STOCK_ARCHIVE" \
+            --report "$BUILD5_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD5_STOCK_ARCHIVE" | md5sum -c -
+      - name: Build private Build5 sparse super from original EROFS; no super artifact upload
+        run: |
+          sudo --preserve-env=BUILD5_STOCK_ARCHIVE,BUILD5_PRIVATE,BUILD5_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build5.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD5_PRIVATE" "$BUILD5_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib
+          folder=pathlib.Path(os.environ["BUILD5_PRIVATE"])
+          m=json.loads((folder/"manifest.json").read_text())
+          assert m["build"]=="5-experimental" and m["total_directories_removed"]==108
+          assert m["additional_apks_installed"]==0 and "kernel_su_next_manager" not in m
+          assert m["build5_gallery_target"]=="product_a:/priv-app/Gallery_T_Global/Gallery_T_Global.apk"
+          assert m["cell_broadcast_service_apex_modified"] is False
+          print("Private Build5 super validated and kept inside runner; no standalone image artifact")
+          PY
+      - name: Replace only super.img and vbmeta.img inside full stock firmware and refresh their CRC metadata
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build5_fastboot.py \
+            --archive "$BUILD5_STOCK_ARCHIVE" \
+            --artifact "$BUILD5_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD5_REPORTS"
+          test -s "$RUNNER_TEMP/packaged/$ROM_NAME"
+      - name: Extract vendor_dlkm and odm_dlkm .img files from super.img
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/extracted_dlkm"
+          python3 - <<'PY'
+          import tarfile, pathlib, subprocess, os, shutil
+
+          stock_archive = pathlib.Path(os.environ["BUILD5_STOCK_ARCHIVE"])
+          out_super = pathlib.Path(os.environ["RUNNER_TEMP"]) / "extracted_dlkm"
+          
+          print("[*] Extracting super.img from stock archive...")
+          with tarfile.open(stock_archive, "r:*") as tar:
+              for member in tar.getmembers():
+                  if member.name.endswith("images/super.img"):
+                      member.name = "super.img"
+                      tar.extract(member, path=out_super)
+                      break
+
+          super_img = out_super / "super.img"
+          if not super_img.exists():
+              raise FileNotFoundError("super.img not found in stock archive!")
+
+          unpack_dir = out_super / "unpacked"
+          unpack_dir.mkdir(exist_ok=True)
+          print("[*] Running lpunpack on super.img...")
+          subprocess.run(["lpunpack", str(super_img), str(unpack_dir)], check=True)
+
+          artifact_dir = pathlib.Path(os.environ["RUNNER_TEMP"]) / "dlkm_artifacts"
+          artifact_dir.mkdir(parents=True, exist_ok=True)
+
+          found = []
+          for p in unpack_dir.glob("*.img"):
+              name = p.name.lower()
+              if "vendor_dlkm" in name or "odm_dlkm" in name:
+                  dest = artifact_dir / p.name
+                  shutil.copy2(p, dest)
+                  found.append(p.name)
+                  print(f"[+] Prepared DLKM image for artifact upload: {p.name}")
+
+          if not found:
+              raise FileNotFoundError("Could not find vendor_dlkm or odm_dlkm images in unpacked super partition.")
+          PY
+      - name: Upload vendor_dlkm and odm_dlkm images as GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-dlkm-partition-images
+          path: ${{ runner.temp }}/dlkm_artifacts/*.img
+          retention-days: 30
+          if-no-files-found: error
+      - name: Split full firmware ZIP and verify reassembly and per-part hashes
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          split -b 768M -d -a 3 "$ROM_NAME" "$ROM_NAME.part-"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          sha256sum "$ROM_NAME".part-* > PARTS_SHA256.txt
+          python3 - <<'PY'
+          import glob,hashlib,json,os,pathlib
+          d=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          report=json.loads((pathlib.Path(os.environ["BUILD5_REPORTS"])/"VERIFICATION.json").read_text())
+          files=sorted(d.glob(os.environ["ROM_NAME"]+".part-*"))
+          if len(files)<2:raise SystemExit("Missing split ZIP parts")
+          sha=hashlib.sha256();total=0;parts=[]
+          for f in files:
+              h=hashlib.sha256()
+              with f.open("rb") as stream:
+                  for chunk in iter(lambda:stream.read(8*1024*1024),b""):
+                      sha.update(chunk);h.update(chunk);total+=len(chunk)
+              parts.append({"file":f.name,"bytes":f.stat().st_size,"sha256":h.hexdigest()})
+          if sha.hexdigest()!=report["firmware_zip_sha256"] or total!=report["firmware_zip_bytes"]:
+              raise SystemExit("Split ZIP does not match complete repacked firmware")
+          (d/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "zip_filename":os.environ["ROM_NAME"],
+              "zip_bytes":total,"zip_sha256":sha.hexdigest(),"parts":parts,
+              "build":5,"app_folders_removed":108,
+              "additional_apks_installed":0
+          },indent=2)+"\n")
+          print("FULL BUILD5 ZIP VERIFIED: SHA256",sha.hexdigest(),"bytes",total,flush=True)
+          PY
+          rm "$ROM_NAME"
+          df -h "$RUNNER_TEMP"
+      - name: Publish ONLY full fastboot firmware ZIP parts and checksum files
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          cat > "$RUNNER_TEMP/build5-release-notes.md" <<'EOF'
+          Xiaomi Redmi Pad (yunluo), Android 13, MIUI 14 Global V14.0.4.0.TLYMIXM.
+          Build 5 Experimental: 108 complete stock app folders removed, adding Gallery to all
+          107 Build 4 removals. No APK is added or injected to any system partition.
+          Fresh original Xiaomi ROM source; all non-target images preserved.
+
+          Exactly two IMAGE files have changed:
+            images/super.img (Build5 system contents)
+            images/vbmeta.img (top-level AVB0 flags 3; verification and verity disabled).
+          Two dependent checksum TEXT files have changed:
+            images/crclist.txt (vbmeta_a checksum)
+            images/sparsecrclist.txt (super sparse CRC values).
+          All original flashing scripts, original scatter files and remaining firmware
+          image files (including vbmeta_system and vbmeta_vendor) preserved.
+          No independent super.img artifact will be uploaded or published.
+
+          Download ALL ZIP part files and ZIP_SHA256.txt.
+          Reassemble via cat <zipfilename>.part-* > <zipfilename>
+          Validate via sha256sum -c ZIP_SHA256.txt
+
+          UNLOCKED BOOTLOADER REQUIRED. Never run flash_all_lock.sh or relock bootloader.
+          Original flash_all.sh erases metadata and overwrites userdata; data loss expected.
+          Combined Build5 firmware has passed offline checks only; not device-flash-tested.
+          EOF
+          gh release create "$ROM_RELEASE" \
+            "$ROM_NAME".part-* DOWNLOAD_MANIFEST.json ZIP_SHA256.txt PARTS_SHA256.txt \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad Build 5 Experimental — full MIUI fastboot ROM only (108 folders)" \
+            --notes-file "$RUNNER_TEMP/build5-release-notes.md" \
+            --latest=false --prerelease
+      - name: Upload small offline verification report only; no super image artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build5-full-firmware-offline-verification
+          path: ${{ github.workspace }}/.build5-work/report/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Confirm full-firmware release assets
+        if: success()
+        run: |
+          gh release view "$ROM_RELEASE" -R "$GH_REPO" --json url,assets --jq '{url:.url,assets:[.assets[]|{name:.name,size:.size}]}'
