@@ -1,0 +1,19 @@
+name: Supersede old Build 6 pre-audit run
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build6-supersede-preaudit.yml
+permissions:
+  contents: read
+  actions: write
+jobs:
+  stop-preaudit:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Stop pre-audit Build 6 to prevent release before vetted JNI exclusions
+        run: |
+          gh run cancel 40204089530 -R "$GH_REPO" || echo "Pre-audit job already stopped"
