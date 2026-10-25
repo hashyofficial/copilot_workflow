@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      BUILD6_STOCK_ARCHIVE: ${{ runner.temp }}/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
-      BUILD6_AUDIT_REPORT: ${{ runner.temp }}/build6-library-audit
+      BUILD6_STOCK_ARCHIVE: ${{ github.workspace }}/.build6-audit/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD6_AUDIT_REPORT: ${{ github.workspace }}/.build6-audit/reports
     steps:
       - uses: actions/checkout@v4
       - name: Check complete-folder deletion manifest
@@ -56,6 +56,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: yunluo-build6-leftover-library-audit
-          path: ${{ runner.temp }}/build6-library-audit/
+          path: ${{ github.workspace }}/.build6-audit/reports/
           if-no-files-found: warn
           retention-days: 30
