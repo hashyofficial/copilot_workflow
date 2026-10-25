@@ -43,8 +43,18 @@ jobs:
       - name: Install pinned Android image tools and EROFS utilities
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip python3-pyflakes
           python3 scripts/inventory.py --install-tools
+      - name: Check Python undefined names before any multi-gigabyte firmware build
+        run: |
+          set -euo pipefail
+          pyflakes scripts/repack_build6_fastboot.py scripts/pack_super_build6.py scripts/build6_cleanup.py \
+            > "$RUNNER_TEMP/build6-pyflakes.txt" 2>&1 || true
+          if grep -E 'undefined name' "$RUNNER_TEMP/build6-pyflakes.txt"; then
+            echo "Undefined Python variable detected; refusing to waste runner time" >&2
+            exit 1
+          fi
+          echo "No undefined Python names in Build 6 scripts"
       - name: Prove EROFS excludes individual library files, without removing parent directory
         run: |
           set -euo pipefail
