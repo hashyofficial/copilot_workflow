@@ -14,13 +14,14 @@ jobs:
   extract-dlkm-images:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      STOCK_ARCHIVE: ${{ runner.temp }}/yunluo-stock-miui14.tgz
-      SPARSE_SUPER: ${{ runner.temp }}/super.stock.sparse.img
-      RAW_SUPER: ${{ runner.temp }}/super.stock.raw.img
-      PARTS_DIR: ${{ runner.temp }}/dlkm-images
     steps:
       - uses: actions/checkout@v4
+      - name: Set extraction paths in runner temporary directory
+        run: |
+          echo "STOCK_ARCHIVE=$RUNNER_TEMP/yunluo-stock-miui14.tgz" >> "$GITHUB_ENV"
+          echo "SPARSE_SUPER=$RUNNER_TEMP/super.stock.sparse.img" >> "$GITHUB_ENV"
+          echo "RAW_SUPER=$RUNNER_TEMP/super.stock.raw.img" >> "$GITHUB_ENV"
+          echo "PARTS_DIR=$RUNNER_TEMP/dlkm-images" >> "$GITHUB_ENV"
 
       - name: Install tools for Xiaomi MIUI 14 stock super extraction
         run: |
@@ -98,7 +99,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MIUI-Build5-vendor_dlkm
-          path: ${{ env.PARTS_DIR }}/vendor_dlkm.img
+          path: ${{ runner.temp }}/dlkm-images/vendor_dlkm.img
           retention-days: 30
           if-no-files-found: error
           compression-level: 0
@@ -107,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MIUI-Build5-odm_dlkm
-          path: ${{ env.PARTS_DIR }}/odm_dlkm.img
+          path: ${{ runner.temp }}/dlkm-images/odm_dlkm.img
           retention-days: 30
           if-no-files-found: error
           compression-level: 0
