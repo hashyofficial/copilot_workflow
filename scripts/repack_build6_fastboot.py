@@ -206,6 +206,7 @@ def main():
     a=ap.parse_args()
     if sha(a.archive,"md5")!=MD5:fail("Wrong original Xiaomi firmware download")
     files=verify_parts(a.artifact)
+    manifest=json.loads((a.artifact/"manifest.json").read_text())
     print("Verified original Xiaomi ROM MD5 and complete private Build 6 super parts SHA256",flush=True)
     stock={};modes={};old_crcs=None;seen=set();preserved={}
     tmp=a.zip.with_name(a.zip.name+".working")
