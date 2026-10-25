@@ -1,0 +1,113 @@
+name: MIUI Build 5 - extract vendor_dlkm and odm_dlkm images only
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/miui-build5-dlkm-images.yml
+
+permissions:
+  contents: read
+
+jobs:
+  extract-dlkm-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      STOCK_ARCHIVE: ${{ runner.temp }}/yunluo-stock-miui14.tgz
+      SPARSE_SUPER: ${{ runner.temp }}/super.stock.sparse.img
+      RAW_SUPER: ${{ runner.temp }}/super.stock.raw.img
+      PARTS_DIR: ${{ runner.temp }}/dlkm-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools for Xiaomi MIUI 14 stock super extraction
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils python3
+          python3 scripts/inventory.py --install-tools
+
+      - name: Download and verify exact original MIUI Build 5 source firmware
+        run: |
+          set -euo pipefail
+          python3 scripts/download.py --output "$STOCK_ARCHIVE" --report "$RUNNER_TEMP/dlkm-source-download.json"
+          printf '%s  %s\n' '4003dcb1a4db404e2768801fdb429c4a' "$STOCK_ARCHIVE" | md5sum -c -
+
+      - name: Extract only images/super.img from original fastboot archive
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, shutil, tarfile
+          archive = pathlib.Path(os.environ["STOCK_ARCHIVE"])
+          target = pathlib.Path(os.environ["SPARSE_SUPER"])
+          matches = 0
+          with tarfile.open(archive, mode="r|gz") as tf:
+              for member in tf:
+                  p = pathlib.PurePosixPath(member.name)
+                  if p.is_absolute() or ".." in p.parts or member.issym() or member.islnk():
+                      raise RuntimeError("Unsafe firmware archive entry: " + member.name)
+                  if member.isfile() and p.name == "super.img" and p.parent.name == "images":
+                      matches += 1
+                      if matches != 1:
+                          raise RuntimeError("Multiple images/super.img entries")
+                      with tf.extractfile(member) as src, target.open("wb") as dst:
+                          shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+          if matches != 1 or not target.is_file() or target.stat().st_size == 0:
+              raise RuntimeError("Expected exactly one nonempty images/super.img")
+          print(f"Original super image extracted: {target.stat().st_size} bytes")
+          PY
+          rm -f "$STOCK_ARCHIVE"
+
+      - name: Convert stock super to raw and verify its SHA256
+        run: |
+          set -euo pipefail
+          magic="$(od -An -tx1 -N4 "$SPARSE_SUPER" | tr -d ' \n')"
+          if [ "$magic" = "3aff26ed" ]; then
+            .tools/android-tools-static/simg2img "$SPARSE_SUPER" "$RAW_SUPER"
+            rm -f "$SPARSE_SUPER"
+          else
+            mv "$SPARSE_SUPER" "$RAW_SUPER"
+          fi
+          echo "2c61eddca409fdb6dca1cb448f991d6bc911355a5f247c742f3fae0fdacce6ef  $RAW_SUPER" | sha256sum -c -
+          test "$(stat -c '%s' "$RAW_SUPER")" -eq 9126805504
+          .tools/android-tools-static/lpdump -s 0 "$RAW_SUPER" > "$RUNNER_TEMP/lpdump-a.txt"
+          grep -Eq 'Name: vendor_dlkm_a([[:space:]]|$)' "$RUNNER_TEMP/lpdump-a.txt"
+          grep -Eq 'Name: odm_dlkm_a([[:space:]]|$)' "$RUNNER_TEMP/lpdump-a.txt"
+
+      - name: Extract and validate only vendor_dlkm and odm_dlkm from slot A
+        run: |
+          set -euo pipefail
+          mkdir -p "$PARTS_DIR"
+          .tools/android-tools-static/lpunpack --slot=0 --partition=vendor_dlkm_a "$RAW_SUPER" "$PARTS_DIR"
+          .tools/android-tools-static/lpunpack --slot=0 --partition=odm_dlkm_a "$RAW_SUPER" "$PARTS_DIR"
+          test -s "$PARTS_DIR/vendor_dlkm_a.img"
+          test -s "$PARTS_DIR/odm_dlkm_a.img"
+          mv "$PARTS_DIR/vendor_dlkm_a.img" "$PARTS_DIR/vendor_dlkm.img"
+          mv "$PARTS_DIR/odm_dlkm_a.img" "$PARTS_DIR/odm_dlkm.img"
+          fsck.erofs "$PARTS_DIR/vendor_dlkm.img"
+          fsck.erofs "$PARTS_DIR/odm_dlkm.img"
+          sha256sum "$PARTS_DIR/vendor_dlkm.img" "$PARTS_DIR/odm_dlkm.img"
+          ls -lh "$PARTS_DIR/"*.img
+          echo "### MIUI Build 5 unchanged DLKM partitions" >> "$GITHUB_STEP_SUMMARY"
+          echo "Source: stock MIUI 14 Global V14.0.4.0.TLYMIXM, identical in these unchanged partitions to Build 5 modified super." >> "$GITHUB_STEP_SUMMARY"
+          echo 'Only vendor_dlkm.img and odm_dlkm.img are uploaded as separate artifacts.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload vendor_dlkm.img only
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIUI-Build5-vendor_dlkm
+          path: ${{ env.PARTS_DIR }}/vendor_dlkm.img
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload odm_dlkm.img only
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIUI-Build5-odm_dlkm
+          path: ${{ env.PARTS_DIR }}/odm_dlkm.img
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
