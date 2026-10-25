@@ -275,7 +275,7 @@ def build():
                         extra_identities[entry["location"]]=entry["android_package_id"]
                 for location,(partition,pp) in new.items():
                     if partition==name and location not in extra_identities:
-                        raise RuntimeError("Build 5 source APK identity not checked: "+location)
+                        raise RuntimeError("Build 6 source APK identity not checked: "+location)
                 report("build6-identities-"+name+".json",
                        json.dumps(extra_identities,sort_keys=True,indent=2)+"\\n")
                 for location,package in expected_packages.items():
@@ -309,14 +309,15 @@ def build():
             verified_mount=temp/("verified-"+name)
             mount_readonly(out,verified_mount)
             try:
-                diff=compare_trees(before,tree_map(verified_mount),all_exclusions)
+                after=tree_map(verified_mount)
+                diff=compare_trees(before,after,all_exclusions)
                 if not diff["passed"]:raise RuntimeError("Retained files changed in "+name)
-                if any('/'+p.lstrip('/') in tree_map(verified_mount) for p in extra_exclusions):
+                if any('/'+p.lstrip('/') in after for p in extra_exclusions):
                     raise RuntimeError('Build 6 selected leftover survived EROFS repack: '+name)
                 for location in protected:
                     if location.startswith(name+":"):
                         target="/"+location.split(":",1)[1].lstrip("/")
-                        if target not in before or target not in tree_map(verified_mount):
+                        if target not in before or target not in after:
                             raise RuntimeError("Protected package missing after Build 3 rebuild")
                 rows.append({"partition":name,"directories_removed":len(files),
                              "retained_paths_matched":diff["expected_retained"],
@@ -334,7 +335,7 @@ def build():
                 raise RuntimeError("Unexpected modifications outside target partitions")
             cursor=end
         if sum(x["directories_removed"] for x in rows)!=108:
-            raise RuntimeError("Build 5 did not remove exactly 108 dedicated app folders")
+            raise RuntimeError("Build 6 did not remove exactly 108 dedicated app folders")
         sparse_out=temp/"candidate.sparse.img"
         run_checked(TOOLS/"img2simg",candidate,sparse_out)
         check=temp/"roundtrip.raw.img"
@@ -369,7 +370,7 @@ def build():
                   "build5_gallery_target":GALLERY_LOCATION,
                   "cell_broadcast_service_apex_modified":False,
                   "protected_packages":protected,
-                  "overlays_removed":0,
+                  "overlays_removed":sum(1 for x in cleanup_reports for item in x["selected"] if item["kind"]=="overlay"),
                   "apex_runtime_packages_removed":0,
                   "userdata_apps_removed":0,
                   "excluded_folders":sorted([{"location":loc,"folder":str(path.parent)} for loc,(p,path) in trial.items()],
