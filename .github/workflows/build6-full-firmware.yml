@@ -1,0 +1,187 @@
+name: MIUI Build 6 - deep debloat and complete fastboot ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build6-full-firmware.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  full-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD6_STOCK_ARCHIVE: ${{ github.workspace }}/.build6-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD6_PRIVATE: ${{ github.workspace }}/.build6-work/private-super-NOT-UPLOADED
+      BUILD6_REPORTS: ${{ github.workspace }}/.build6-work/report
+      ROM_NAME: yunluo_MIUI14_Global_Build6_DeepDebloat_AVBDisabled_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build6-deep-debloat-experimental
+      OCI_REF: ghcr.io/hashyofficial/redmi-pad-yunluo-miui-project-firmware:build6-experimental
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Build 6 and verify exactly 108 complete APK-folder removals
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build5_gallery_targets.py scripts/pack_super_build6.py scripts/repack_build6_fastboot.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from build5_gallery_targets import targets_from_build4,GALLERY_LOCATION
+          d,p,r,n=targets_from_build4()
+          assert len(d)==108 and len(n)==15 and GALLERY_LOCATION in d and len(r)==3
+          assert all(apk.parent != '/system/app/Photos' for _,apk in d.values())
+          print("Verified 108 original app folders; all 3 previously protected apps remain protected")
+          PY
+          df -h "$RUNNER_TEMP"
+      - name: Install stock ROM and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip
+          python3 scripts/inventory.py --install-tools
+      - name: Download and verify ORIGINAL Xiaomi global MIUI firmware
+        run: |
+          mkdir -p "$BUILD6_REPORTS"
+          python3 scripts/download.py \
+            --output "$BUILD6_STOCK_ARCHIVE" \
+            --report "$BUILD6_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD6_STOCK_ARCHIVE" | md5sum -c -
+      - name: Build private Build6 sparse super from original EROFS; no super artifact upload
+        run: |
+          sudo --preserve-env=BUILD6_STOCK_ARCHIVE,BUILD6_PRIVATE,BUILD6_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build6.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD6_PRIVATE" "$BUILD6_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib
+          folder=pathlib.Path(os.environ["BUILD6_PRIVATE"])
+          m=json.loads((folder/"manifest.json").read_text())
+          assert m["build"]=="6-experimental" and m["total_directories_removed"]==108
+          assert m["additional_apks_installed"]==0 and "kernel_su_next_manager" not in m
+          assert m["build5_gallery_target"]=="product_a:/priv-app/Gallery_T_Global/Gallery_T_Global.apk"
+          assert m["cell_broadcast_service_apex_modified"] is False
+          print("Private Build6 super validated and kept inside runner; no standalone image artifact")
+          PY
+      - name: Replace only super.img and vbmeta.img inside full stock firmware and refresh their CRC metadata
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build6_fastboot.py \
+            --archive "$BUILD6_STOCK_ARCHIVE" \
+            --artifact "$BUILD6_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD6_REPORTS"
+          test -s "$RUNNER_TEMP/packaged/$ROM_NAME"
+      - name: Verify one complete fastboot ZIP and produce SHA256 manifest
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          python3 - <<'PY'
+          import json,os,pathlib,zipfile
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          file=root/os.environ["ROM_NAME"]
+          result=json.loads((pathlib.Path(os.environ["BUILD6_REPORTS"])/"VERIFICATION.json").read_text())
+          assert file.stat().st_size==result["firmware_zip_bytes"]
+          with zipfile.ZipFile(file) as z:
+              assert z.testzip() is None
+              for suffix in ("/images/super.img","/images/vbmeta.img","/images/crclist.txt",
+                             "/images/sparsecrclist.txt","/flash_all.sh"):
+                  assert any(n.endswith(suffix) for n in z.namelist()),suffix
+          (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "device":"yunluo","build":6,"firmware_zip":file.name,
+              "sha256":result["firmware_zip_sha256"],
+              "bytes":file.stat().st_size,
+              "download_command":"oras pull "+os.environ["OCI_REF"]
+          },indent=2)+"\n")
+          print("Verified full Build 6 ZIP SHA256:",result["firmware_zip_sha256"])
+          PY
+
+      - name: Install SHA256-verified upstream ORAS CLI
+        run: |
+          set -euo pipefail
+          VERSION=1.3.0
+          ASSET="oras_${VERSION}_linux_amd64.tar.gz"
+          SHA="$(gh api repos/oras-project/oras/releases/tags/v$VERSION --jq \
+            '.assets[] | select(.name=="oras_1.3.0_linux_amd64.tar.gz") | .digest' | sed 's/^sha256://')"
+          test "$(printf %s "$SHA" | wc -c)" -eq 64
+          curl -fL --retry 8 --retry-all-errors --retry-delay 5 \
+            -o "$RUNNER_TEMP/$ASSET" "https://github.com/oras-project/oras/releases/download/v$VERSION/$ASSET"
+          echo "$SHA  $RUNNER_TEMP/$ASSET" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/$ASSET" -C "$RUNNER_TEMP" oras
+          sudo install -m 755 "$RUNNER_TEMP/oras" /usr/local/bin/oras
+
+      - name: Upload ONE full MIUI fastboot ZIP to GHCR and verify SHA256
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          oras push --no-tty \
+            --artifact-type application/vnd.redmi-pad.fastboot-firmware.v1+zip \
+            --annotation "org.opencontainers.image.source=https://github.com/$GH_REPO" \
+            --annotation "org.opencontainers.image.version=build6-experimental" \
+            "$OCI_REF" "$ROM_NAME:application/zip"
+          oras manifest fetch "$OCI_REF" > "$RUNNER_TEMP/ghcr-manifest.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          m=json.loads((pathlib.Path(os.environ["RUNNER_TEMP"])/"ghcr-manifest.json").read_text())
+          layers=m.get("layers") or m.get("blobs") or []
+          report=json.loads((pathlib.Path(os.environ["BUILD6_REPORTS"])/"VERIFICATION.json").read_text())
+          assert len(layers)==1 and layers[0]["digest"]=="sha256:"+report["firmware_zip_sha256"]
+          assert layers[0]["size"]==report["firmware_zip_bytes"]
+          print("GHCR contains the one complete Build 6 ZIP with verified digest and size")
+          PY
+          oras logout ghcr.io
+
+      - name: Publish experimental Release with one-ZIP download instructions
+        run: |
+          set -euo pipefail
+          if gh release view "$ROM_RELEASE" -R "$GH_REPO" >/dev/null 2>&1; then
+            echo "Build 6 release already exists; refusing to overwrite" >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/build6-notes.md" <<'EOF'
+          ## Redmi Pad (yunluo) — MIUI 14 Global Android 13 — Build 6
+
+          Builds on boot-confirmed Build 5, keeping the 108 complete APK-folder
+          deletions including Gallery. Additional native libraries, package XML,
+          and overlays are removed only where exact app ownership can be proven.
+          Unknown or possibly shared files are retained for safety and reported.
+
+          Rebuilt images/super.img and modified stock images/vbmeta.img (AVB
+          flags 3), regenerating images/crclist.txt and images/sparsecrclist.txt.
+          No APK is injected. Other stock firmware images remain unchanged.
+
+          Download ONE entire normal fastboot ZIP using ORAS:
+          oras pull ghcr.io/hashyofficial/redmi-pad-yunluo-miui-project-firmware:build6-experimental
+
+          Verify the downloaded ZIP against ZIP_SHA256.txt from this Release.
+          GHCR package storage does not have Actions artifact automatic expiry
+          (though owners/platform can remove packages). Detailed cleanup audit
+          is in the Build 6 GitHub Actions artifacts, retained for 30 days.
+
+          EXPERIMENTAL: Build 6 has not been tested booting on the tablet.
+          Keep your known-working V1.0 recovery firmware available.
+          Only for unlocked Redmi Pad yunluo. Never relock the bootloader or
+          run flash_all_lock.sh. Original flash_all.sh erases user data.
+          EOF
+          cd "$RUNNER_TEMP/packaged"
+          gh release create "$ROM_RELEASE" DOWNLOAD_MANIFEST.json ZIP_SHA256.txt \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad MIUI 14 Build 6 - Deep Debloat (Experimental)" \
+            --notes-file "$RUNNER_TEMP/build6-notes.md" \
+            --latest=false --prerelease
+
+      - name: Save Build 6 leftover audit and offline verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build6-cleanup-and-offline-verification
+          path: ${{ github.workspace }}/.build6-work/report/
+          retention-days: 30
+          if-no-files-found: warn
