@@ -27,7 +27,7 @@ def read_uleb(data, pos):
     raise ValueError("Invalid ULEB128 size")
 
 def dex_strings(data):
-    if len(data)<112 or not data.startswith(b"dex\\n"):
+    if len(data)<112 or not data.startswith(b"dex\n"):
         raise ValueError("Not an Android DEX")
     size,offset=struct.unpack_from("<II",data,0x38)
     if size>3_000_000 or offset+size*4>len(data):
@@ -37,7 +37,7 @@ def dex_strings(data):
         ptr=struct.unpack_from("<I",data,offset+i*4)[0]
         if ptr>=len(data): raise ValueError("Out-of-bounds DEX string")
         _,ptr=read_uleb(data,ptr)
-        end=data.find(b"\\0",ptr)
+        end=data.find(b"\0",ptr)
         if end<0: raise ValueError("Unterminated DEX string")
         out.add(data[ptr:end].decode("utf-8","replace"))
     return out
@@ -46,7 +46,7 @@ def inspect_apk(apk):
     observed=set()
     with zipfile.ZipFile(apk) as archive:
         for name in archive.namelist():
-            if re.fullmatch(r"classes(?:[2-9][0-9]*)?\\.dex",name):
+            if re.fullmatch(r"classes(?:[2-9][0-9]*)?\.dex",name):
                 observed.update(dex_strings(archive.read(name)))
     if not observed:
         raise ValueError("Security Center APK contains no DEX string pools")
@@ -62,7 +62,7 @@ def main():
     inventory={}
     for line in a.inventory.read_text().splitlines():
         if not line or line.startswith("#"):continue
-        partition,path,pkg,status=line.split("\\t")
+        partition,path,pkg,status=line.split("\t")
         if status not in ("REMOVED","KEPT","PROTECTED"):
             raise RuntimeError("Invalid inventory status "+status)
         if pkg in inventory:raise RuntimeError("Duplicate package identity "+pkg)
@@ -87,7 +87,7 @@ def main():
             "removed_class_refs":[x["package"] for x in matches if x["status"]=="REMOVED" and x["dex_class_reference"]],
             "removed_incidental_mentions":[x["package"] for x in matches if x["status"]=="REMOVED" and not x["exact_package_const_string"] and not x["dex_class_reference"]]}
     a.output.parent.mkdir(parents=True,exist_ok=True)
-    a.output.write_text(json.dumps(result,indent=2)+"\\n")
+    a.output.write_text(json.dumps(result,indent=2)+"\n")
     print(json.dumps({k:v for k,v in result.items() if k!="matches"},indent=2))
 
 if __name__=="__main__":main()
