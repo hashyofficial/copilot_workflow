@@ -4,6 +4,7 @@ name: MIUI Build 9 - Final Candidate with Photon Gallery
 # Build 9 removes four more gallery/media apps, restores Calendar, removes Android Switch and Kryten by package ID, and adds signed Photon.
 # Preserve haptic, MiraVision JNI, boot.img and verified stock checksum/partition safeguards.
 # Triggers on this workflow file's changes and on manual workflow dispatch.
+# Revision: final rebuilt EROFS remains the authoritative metadata identity check; reuse source extracts.
 on:
   push:
     branches: [main]
