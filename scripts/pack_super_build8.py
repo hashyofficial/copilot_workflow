@@ -25,7 +25,7 @@ RESULTS = Path(os.environ.get("BUILD8_REPORTS",str(ROOT/"reports-build8")))
 BINARIES = Path(os.environ.get("BUILD8_PRIVATE",str(ROOT/"private-build8-parts")))
 RESULTS.mkdir(exist_ok=True)
 # Offset and number of 512-byte sectors, taken from the signed-off source LP audit.
-REGIONS = {"product_a": (4096,5590248), "system_a": (5595136,1804456), "system_ext_a": (7587840,899248)}
+REGIONS = {"product_a": (4096,5590248), "system_a": (5595136,1804456), "system_ext_a": (7587840,919248)}
 CHUNK = 768 * 1024 * 1024
 
 def report(name,text):
@@ -363,7 +363,7 @@ def build():
                 (BINARIES/name).write_bytes(data)
                 parts.append({"file":name,"sha256":hashlib.sha256(data).hexdigest(),"bytes":len(data)})
                 i+=1
-        manifest={"slot":"a","model":"yunluo","build":"7-experimental",
+        manifest={"slot":"a","model":"yunluo","build":"8-experimental",
                   "source":"fresh Xiaomi MIUI 14 stock ROM, not any Build 5 or Build 8 image",
                   "original_firmware_md5":MD5,
                   "build8_previous_app_folder_removals":108,

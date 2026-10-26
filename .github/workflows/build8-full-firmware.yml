@@ -58,7 +58,7 @@ jobs:
             "system_a:/system/priv-app/Backup/Backup.apk",
             "system_a:/system/priv-app/UserDictionaryProvider/UserDictionaryProvider.apk",
           }
-          assert required.issubset(kept) and not (required & removed)
+          assert required.issubset(kept) and not (required & set(removed))
           assert len({(p,str(apk.parent)) for p,apk in removed.values()})==89
           assert len(MIRAVISION_JNI)==2
           assert set(APPROVED_PINNED_NATIVE)=={"/system/lib64/libprintspooler_jni.so"}
@@ -110,7 +110,7 @@ jobs:
           from build8_targets import build8_targets, MIRAVISION_JNI
           doc=json.loads((pathlib.Path(os.environ["BUILD8_PRIVATE"])/"manifest.json").read_text())
           removed,_,_,kept=build8_targets()
-          assert doc["model"]=="yunluo" and doc["build"]=="7-experimental"
+          assert doc["model"]=="yunluo" and doc["build"]=="8-experimental"
           assert doc["total_directories_removed"]==89 and doc["build8_restored_app_folders"]==19
           assert set(doc["build8_kept_locations"])==set(kept)
           assert "Backup" in doc["build8_kept_folders"]

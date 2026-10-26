@@ -14,7 +14,7 @@ SUPER_SHA=""
 RAW_SHA=""
 STOCK_VBMETA_SHA="181b221211ed75bc94a1346d7e424f8fbfc8dc9032ce3f88561b54e287b33879"
 SUPER_BYTES=0
-RAW_BYTES=8926805504
+RAW_BYTES=9126805504
 MAXCRC=(256*1024*1024)-(28+2*12+4)
 NREAD=8*1024*1024
 MATCH_USER={
@@ -165,7 +165,7 @@ def verify_parts(folder):
     from build8_targets import build8_targets, MIRAVISION_JNI
     manifest=json.loads((folder/"manifest.json").read_text())
     removed,_,_,kept=build8_targets()
-    if manifest.get("model")!="yunluo" or manifest.get("slot")!="a" or manifest.get("build")!="7-experimental":
+    if manifest.get("model")!="yunluo" or manifest.get("slot")!="a" or manifest.get("build")!="8-experimental":
         fail("Wrong Build 8 source")
     if manifest.get("build8_previous_app_folder_removals")!=108 or len(kept)!=19:
         fail("Build 8 source 108 / keep 19 mismatch")
