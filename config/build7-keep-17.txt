@@ -1,0 +1,20 @@
+# Build 7 exact 17 protected APKs: restored from Xiaomi ORIGINAL ROM, never from Build 6.
+# Exact partition-qualified locations; each APK's entire parent folder is retained.
+# MiraVision additionally keeps all standalone JNI and related native library files.
+system_a:/system/priv-app/ContactsProvider/ContactsProvider.apk
+system_a:/system/app/MiraVision/MiraVision.apk
+product_a:/priv-app/Turbo/Turbo.apk
+product_a:/app/MIUIXiaomiAccountGlobal/MIUIXiaomiAccountGlobal.apk
+product_a:/app/MIUIVideoPlayer/MIUIVideoPlayer.apk
+product_a:/data-app/MiuiScanner/MiuiScanner.apk
+product_a:/app/MIUIDeskClockPadGlobal/MIUIDeskClockPadGlobal.apk
+product_a:/app/MIUICloudServiceGlobal/MIUICloudServiceGlobal.apk
+product_a:/data-app/MIUICalculatorGlobalPad/MIUICalculatorGlobalPad.apk
+product_a:/data-app/MIMediaEditorGlobal/MIMediaEditorGlobal.apk
+product_a:/app/GoogleContacts/GoogleContacts.apk
+product_a:/priv-app/ExtraPhotoGlobal/ExtraPhotoGlobal.apk
+system_a:/system/priv-app/SoundPicker/SoundPicker.apk
+system_ext_a:/priv-app/FindDevice/FindDevice.apk
+product_a:/priv-app/Gallery_T_Global/Gallery_T_Global.apk
+product_a:/priv-app/MIUICloudBackupGlobal/MIUICloudBackupGlobal.apk
+product_a:/app/MIUIMiCloudSync/MIUIMiCloudSync.apk
