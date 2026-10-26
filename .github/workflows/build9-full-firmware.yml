@@ -5,6 +5,7 @@ name: MIUI Build 9 - Final Candidate with Photon Gallery
 # Preserve haptic, MiraVision JNI, boot.img and verified stock checksum/partition safeguards.
 # Triggers on this workflow file's changes and on manual workflow dispatch.
 # Revision: final rebuilt EROFS remains the authoritative metadata identity check; reuse source extracts.
+# Revision 2: preserve original stock root directory SELinux and timestamps in Photon staging.
 on:
   push:
     branches: [main]
