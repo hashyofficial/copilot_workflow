@@ -18,6 +18,34 @@ This branch does not modify boot.img, vbmeta.img, super.img, Security Center or 
   `ArrayMap` while scanning mobile data rules on this Wi-Fi-only tablet.
   A Java exception in a stock privileged app is NOT a missing `.so` symptom.
 
+## Verified stock Xiaomi framework result (2026-10-26)
+
+Read-only GitHub workflow run: https://github.com/hashyofficial/copilot_workflow/actions/runs/40279553022
+
+The stock MIUI 14 archive passed the pinned MD5 check, and the original
+`framework-res.apk` was read from the mounted original `system_a` EROFS.
+
+Actual policy result from `aapt2 dump overlayable`:
+
+```json
+{
+  "gallery_rro_allowed": false,
+  "reason": "Stock framework must expose config_systemGallery to product/public overlay; found 0",
+  "stock_product_overlay_config_exists": false
+}
+```
+
+**Conclusion:** The proposed `/product/overlay` Gallery-role RRO cannot be
+shipped under the tested public/product overlay policy. This is an expected,
+successful fail-closed policy verdict, **not a patch success**. Do not force
+an unsupported resource mapping, patch or resign Xiaomi's framework-res,
+or call this a functional Galaxy/Gallery fix. The existing resource warning
+is preferable to risking a boot regression.
+
+Any true firmware correction now requires access to the correctly OEM-signed
+framework image, a supported upstream build, or a proven alternative that
+passes resource-id and signature checks. NONE has been verified here.
+
 ## Only proposed patch: config_systemGallery RRO
 
 `build_gallery_rro.py` creates a single-purpose, no-code Android 13
