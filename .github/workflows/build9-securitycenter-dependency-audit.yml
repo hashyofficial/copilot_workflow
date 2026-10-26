@@ -1,0 +1,121 @@
+name: Build 9 Security Center Dependency Audit - Read Only
+
+on:
+  push:
+    branches:
+      - research/build9-gallery-firewall-wifi
+    paths:
+      - research/build9_fixes/audit_security_apk.py
+      - .github/workflows/build9-securitycenter-dependency-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-reference-original-security-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python scanner and install pinned EROFS tools
+        run: |
+          set -euo pipefail
+          python3 -m py_compile research/build9_fixes/audit_security_apk.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils
+          python3 scripts/inventory.py --install-tools
+      - name: Download and verify precise Xiaomi firmware originally used for Build 9
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/security-reference"
+          python3 scripts/download.py \
+            --output "$RUNNER_TEMP/security-reference/stock.tgz" \
+            --report "$RUNNER_TEMP/security-reference/download.json"
+          python3 - <<'PY'
+          import sys,os
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          from inventory import MD5,sha
+          f=Path(os.environ['RUNNER_TEMP'])/'security-reference/stock.tgz'
+          if sha(f,'md5')!=MD5: raise RuntimeError('Stock Xiaomi archive MD5 mismatch')
+          print('Source ROM MD5 verified')
+          PY
+      - name: Mount read-only original partitions and compare 94 removed packages with Security Center DEX
+        run: |
+          set -euo pipefail
+          export RESEARCH_TEMP="$RUNNER_TEMP/security-reference"
+          python3 - <<'PY'
+          import os,sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          from combined_preflight import extract_archive
+          root=Path(os.environ['RESEARCH_TEMP'])
+          source,_=extract_archive(root/'stock.tgz',root)
+          assert source.is_file()
+          PY
+          .tools/android-tools-static/simg2img \
+            "$RESEARCH_TEMP/super.sparse.img" "$RESEARCH_TEMP/stock.raw.img"
+          for part in product_a system_a system_ext_a; do
+            mkdir -p "$RESEARCH_TEMP/$part"
+          done
+          # stock partition offsets/sizes were pinned and verified by Build 9
+          sudo mount -t erofs -o ro,loop,offset=$((4096*512)),sizelimit=$((5590248*512)) \
+            "$RESEARCH_TEMP/stock.raw.img" "$RESEARCH_TEMP/product_a"
+          sudo mount -t erofs -o ro,loop,offset=$((5595136*512)),sizelimit=$((1804456*512)) \
+            "$RESEARCH_TEMP/stock.raw.img" "$RESEARCH_TEMP/system_a"
+          sudo mount -t erofs -o ro,loop,offset=$((7587840*512)),sizelimit=$((919248*512)) \
+            "$RESEARCH_TEMP/stock.raw.img" "$RESEARCH_TEMP/system_ext_a"
+          python3 - <<'PY'
+          import os,sys,subprocess,json
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          from combined_preflight import find_aapt,apk_identity
+          from build9_targets import build9_targets,discover_extra_packages
+          root=Path(os.environ['RESEARCH_TEMP'])
+          mounts={part:root/part for part in ('product_a','system_a','system_ext_a')}
+          aapt=find_aapt()
+          removed,ids,protected,kept=build9_targets()
+          extras,extra_ids,found=discover_extra_packages(mounts,aapt,removed,protected,kept)
+          removed.update(extras);ids.update(extra_ids)
+          assert len(removed)==94 and len(kept)==16, (len(removed),len(kept))
+          rows=[];by_pkg={}
+          for status,mapping in [('REMOVED',removed),('KEPT',kept)]:
+            for loc,(part,rel) in sorted(mapping.items()):
+              apk=mounts[part]/str(rel).lstrip('/')
+              if not apk.is_file():raise RuntimeError('Missing stock '+loc)
+              pkg,_=apk_identity(aapt,apk)
+              if pkg in by_pkg:raise RuntimeError('Duplicate Android package '+pkg)
+              by_pkg[pkg]=loc
+              rows.append((part,str(rel),pkg,status))
+          stock_security=mounts['product_a']/'priv-app/MIUISecurityCenterGlobalPad'
+          candidates=sorted(stock_security.glob('*.apk'))
+          if len(candidates)!=1:raise RuntimeError('Ambiguous stock Security Center folder '+repr(candidates))
+          security_package,_=apk_identity(aapt,candidates[0])
+          if security_package!='com.miui.securitycenter':raise RuntimeError('Unexpected OEM security app '+security_package)
+          import shutil
+          shutil.copyfile(candidates[0],root/'Original-MIUISecurityCenterGlobalPad.apk')
+          (root/'all_110_stock_apks.tsv').write_text('\\n'.join('\\t'.join(row) for row in rows)+'\\n')
+          (root/'securitycenter-original-badging.txt').write_text(subprocess.run([str(aapt),'dump','badging',str(candidates[0])],capture_output=True,text=True,check=True).stdout)
+          (root/'stock-package-locations.json').write_text(json.dumps({'removed':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in removed), 'kept':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in kept),'extras':found},indent=2)+'\\n')
+          print('Stock Security Center identified, 94 removed APK identities and 16 retained APK identities verified')
+          PY
+          python3 research/build9_fixes/audit_security_apk.py \
+            --security-apk "$RESEARCH_TEMP/Original-MIUISecurityCenterGlobalPad.apk" \
+            --inventory "$RESEARCH_TEMP/all_110_stock_apks.tsv" \
+            --output "$RESEARCH_TEMP/securitycenter-dependency-references.json"
+          sudo umount "$RESEARCH_TEMP/system_ext_a"
+          sudo umount "$RESEARCH_TEMP/system_a"
+          sudo umount "$RESEARCH_TEMP/product_a"
+      - name: Upload small text-only forensic results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build9-securitycenter-dependency-analysis
+          path: |
+            ${{ runner.temp }}/security-reference/all_110_stock_apks.tsv
+            ${{ runner.temp }}/security-reference/securitycenter-original-badging.txt
+            ${{ runner.temp }}/security-reference/securitycenter-dependency-references.json
+            ${{ runner.temp }}/security-reference/stock-package-locations.json
+          if-no-files-found: warn
+          retention-days: 30
