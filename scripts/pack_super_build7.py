@@ -228,7 +228,7 @@ def build4_targets():
 
 def build():
     trial,expected_packages,protected,kept=build7_targets()
-    print("Build 7: fresh original Xiaomi firmware; 107 prior removals plus Gallery folder; no APK installed",flush=True)
+    print("Build 7: fresh original Xiaomi firmware; 91 full-folder removals and 17 explicitly protected stock apps; no APK installed",flush=True)
     with tempfile.TemporaryDirectory(prefix="yunluo-build7-fresh-firmware-") as td:
         temp=Path(td)
         external_archive=os.environ.get("BUILD7_STOCK_ARCHIVE")
@@ -398,7 +398,7 @@ def build():
         report("manifest.json",text)
         (BINARIES/"manifest.json").write_text(text)
         report('build7-cleanup-summary.json',json.dumps(cleanup_reports,indent=2)+'\n')
-        report("result.txt","Offline Build 7: 108 whole app folders excluded plus strictly matched standalone leftovers; no added APK, no standalone super artifact.\n"+
+        report("result.txt","Offline Build 7: 91 whole app folders excluded; 17 stock apps and MiraVision JNI retained, plus strictly matched standalone leftovers; no added APK, no standalone super artifact.\n"+
                "A separate installed APK in userdata is not deleted by rebuilding super.img.\n"+
                "No vbmeta image has been modified. Stock AVB is incompatible.\n")
         print("Build 7 verified super assembled privately for complete ROM ZIP; never uploaded separately.",flush=True)
