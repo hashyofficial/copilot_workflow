@@ -63,9 +63,17 @@ jobs:
             "$SOURCE_ROOT/super.raw.img" "$SOURCE_ROOT/system-mounted"
           sudo mount -t erofs -o ro,loop,offset=$((4096*512)),sizelimit=$((5590248*512)) \
             "$SOURCE_ROOT/super.raw.img" "$SOURCE_ROOT/product-mounted"
-          test -f "$SOURCE_ROOT/system-mounted/framework/framework-res.apk"
-          cp "$SOURCE_ROOT/system-mounted/framework/framework-res.apk" \
-             "$RUNNER_TEMP/stock-framework-res.apk"
+          echo "Inspecting stock system partition root:"
+          sudo ls -la "$SOURCE_ROOT/system-mounted" | head -30
+          FRAMEWORK_APK="$(sudo find "$SOURCE_ROOT/system-mounted" \
+            -maxdepth 7 -name framework-res.apk -type f -print -quit)"
+          if test -z "$FRAMEWORK_APK"; then
+            echo "::error::Original framework-res.apk not found in mounted system_a EROFS"
+            sudo find "$SOURCE_ROOT/system-mounted" -maxdepth 3 -type d | head -80
+            exit 1
+          fi
+          echo "Found original stock framework: ${FRAMEWORK_APK##*/}"
+          cp "$FRAMEWORK_APK" "$RUNNER_TEMP/stock-framework-res.apk"
           if test -f "$SOURCE_ROOT/product-mounted/overlay/config/config.xml"; then
             cp "$SOURCE_ROOT/product-mounted/overlay/config/config.xml" \
               "$RUNNER_TEMP/stock-product-overlays.xml"
