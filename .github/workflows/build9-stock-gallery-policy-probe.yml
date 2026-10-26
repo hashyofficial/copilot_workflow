@@ -1,0 +1,116 @@
+name: Build 9 Xiaomi Framework RRO Policy Probe - Read Only
+
+on:
+  push:
+    branches:
+      - research/build9-gallery-firewall-wifi
+    paths:
+      - .github/workflows/build9-stock-gallery-policy-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-original-xiaomi-framework:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned image reader and aapt2
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils
+          python3 scripts/inventory.py --install-tools
+          command -v mount
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
+          test -x "$AAPT2"
+      - name: Download hash-verified original MIUI 14 fastboot ROM
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xiaomi-source"
+          python3 scripts/download.py \
+            --output "$RUNNER_TEMP/xiaomi-source/yunluo_stock.tgz" \
+            --report "$RUNNER_TEMP/xiaomi-source/download.json"
+          python3 - <<'PY'
+          import sys,os
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          from inventory import sha,MD5
+          p=Path(os.environ['RUNNER_TEMP'])/'xiaomi-source/yunluo_stock.tgz'
+          assert sha(p,'md5')==MD5, 'Wrong Xiaomi stock fastboot archive'
+          print('Xiaomi source archive MD5 verified')
+          PY
+      - name: Extract stock framework resource table from original EROFS without modifications
+        run: |
+          set -euo pipefail
+          export SOURCE_ROOT="$RUNNER_TEMP/xiaomi-source"
+          python3 - <<'PY'
+          import os,sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          from combined_preflight import extract_archive
+          root=Path(os.environ['SOURCE_ROOT'])
+          sparse,_=extract_archive(root/'yunluo_stock.tgz',root)
+          assert sparse.is_file()
+          print('Extracted original verified sparse super image')
+          PY
+          .tools/android-tools-static/simg2img \
+            "$SOURCE_ROOT/super.sparse.img" "$SOURCE_ROOT/super.raw.img"
+          mkdir -p "$SOURCE_ROOT/system-mounted" "$SOURCE_ROOT/product-mounted"
+          sudo mount -t erofs -o ro,loop,offset=$((5595136*512)),sizelimit=$((1804456*512)) \
+            "$SOURCE_ROOT/super.raw.img" "$SOURCE_ROOT/system-mounted"
+          sudo mount -t erofs -o ro,loop,offset=$((4096*512)),sizelimit=$((5590248*512)) \
+            "$SOURCE_ROOT/super.raw.img" "$SOURCE_ROOT/product-mounted"
+          echo "Inspecting stock system partition root:"
+          sudo ls -la "$SOURCE_ROOT/system-mounted" | head -30
+          FRAMEWORK_APK="$(sudo find "$SOURCE_ROOT/system-mounted" \
+            -maxdepth 7 -name framework-res.apk -type f -print -quit)"
+          if test -z "$FRAMEWORK_APK"; then
+            echo "::error::Original framework-res.apk not found in mounted system_a EROFS"
+            sudo find "$SOURCE_ROOT/system-mounted" -maxdepth 3 -type d | head -80
+            exit 1
+          fi
+          echo "Found original stock framework: ${FRAMEWORK_APK##*/}"
+          cp "$FRAMEWORK_APK" "$RUNNER_TEMP/stock-framework-res.apk"
+          if test -f "$SOURCE_ROOT/product-mounted/overlay/config/config.xml"; then
+            cp "$SOURCE_ROOT/product-mounted/overlay/config/config.xml" \
+              "$RUNNER_TEMP/stock-product-overlays.xml"
+          fi
+          sudo umount "$SOURCE_ROOT/product-mounted"
+          sudo umount "$SOURCE_ROOT/system-mounted"
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
+          "$AAPT2" dump overlayable "$RUNNER_TEMP/stock-framework-res.apk" \
+            > "$RUNNER_TEMP/stock-framework-overlayable.txt"
+          "$AAPT2" dump resources "$RUNNER_TEMP/stock-framework-res.apk" \
+            | grep -i -A 3 -B 3 config_systemGallery \
+            > "$RUNNER_TEMP/stock-gallery-resources.txt" || true
+          python3 - <<'PY'
+          import os,sys,json
+          from pathlib import Path
+          sys.path.insert(0,'research/build9_fixes')
+          from build_gallery_rro import select_target_name
+          p=Path(os.environ['RUNNER_TEMP'])
+          raw=(p/'stock-framework-overlayable.txt').read_text()
+          try:
+              group,policy=select_target_name(raw)
+              result={'gallery_rro_allowed':True,'targetName':group,'policy':policy}
+          except ValueError as error:
+              result={'gallery_rro_allowed':False,'reason':str(error)}
+          result['stock_product_overlay_config_exists']=(p/'stock-product-overlays.xml').is_file()
+          (p/'stock-gallery-policy-verdict.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          PY
+      - name: Upload SMALL read-only resource-policy diagnostic files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build9-stock-gallery-policy-diagnostic
+          path: |
+            ${{ runner.temp }}/stock-framework-overlayable.txt
+            ${{ runner.temp }}/stock-gallery-resources.txt
+            ${{ runner.temp }}/stock-gallery-policy-verdict.json
+            ${{ runner.temp }}/stock-product-overlays.xml
+          if-no-files-found: warn
+          retention-days: 30

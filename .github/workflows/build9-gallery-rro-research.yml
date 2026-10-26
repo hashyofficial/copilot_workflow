@@ -1,0 +1,48 @@
+name: Build 9 Gallery RRO Research - No Firmware Flash
+
+on:
+  push:
+    branches:
+      - research/build9-gallery-firewall-wifi
+    paths:
+      - research/build9_fixes/**
+      - tests/test_build9_gallery_rro_research.py
+      - .github/workflows/build9-gallery-rro-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rro-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test fail-closed overlay policy and XML
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -v -s tests -p 'test_build9_gallery_rro_research.py'
+          python3 -m py_compile research/build9_fixes/build_gallery_rro.py
+          python3 research/build9_fixes/build_gallery_rro.py --help >/dev/null
+      - name: Compile prototype RRO resources using Android SDK (not stock Xiaomi policy)
+        run: |
+          set -euo pipefail
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -1)"
+          ANDROID_JAR="$(find "$ANDROID_HOME/platforms" -name android.jar | sort -V | tail -1)"
+          test -x "$AAPT2" && test -f "$ANDROID_JAR"
+          TMP="$(mktemp -d)"
+          python3 - "$TMP" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,'research/build9_fixes')
+          from build_gallery_rro import layout
+          layout(Path(sys.argv[1]),'DummyFrameworkPolicyForSyntaxCheckOnly')
+          PY
+          "$AAPT2" compile --dir "$TMP/res" -o "$TMP/resources.flata"
+          "$AAPT2" link --no-resource-deduping --no-resource-removal \
+            -I "$ANDROID_JAR" --manifest "$TMP/AndroidManifest.xml" \
+            -o "$TMP/prototype-UNSIGNED.apk" "$TMP/resources.flata"
+          "$AAPT2" dump badging "$TMP/prototype-UNSIGNED.apk" | grep -F 'org.hashy.yunluo.galleryroleoverlay'
+          echo 'Resource-map syntax compiled. Does NOT prove Xiaomi overlay policy or device boot.'
+          rm -rf "$TMP"
