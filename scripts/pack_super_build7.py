@@ -278,7 +278,7 @@ def build():
                     observed, _ = apk_identity(aapt, preserved_apk)
                     retained_identities[location] = observed
                 report("build7-kept-identities-"+name+".json",
-                       json.dumps(retained_identities,sort_keys=True,indent=2)+"\\n")
+                       json.dumps(retained_identities,sort_keys=True,indent=2)+"\n")
                 for location,package in expected_packages.items():
                     if location.startswith(name+":"):
                         apk=mount/location.split(":",1)[1].lstrip("/")
