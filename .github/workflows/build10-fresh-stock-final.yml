@@ -1,0 +1,241 @@
+name: MIUI Build 10 - Fresh Stock Gallery Restoration (No Photon)
+
+# Rebuild from Xiaomi MD5-verified stock, never from Build 10 artifacts.
+# 93 app directories removed, 17 kept, Gallery restored, Mi Video removed.
+# Do not restore unverified MIService or other optional package references.
+on: final rebuilt EROFS remains the authoritative metadata identity check; reuse source extracts.
+# Revision 2: preserve original stock root directory SELinux and timestamps in Photon staging.
+on:
+  push:
+    branches: [build10/fresh-stock-final]
+    paths:
+      - .github/workflows/build10-fresh-stock-final.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD10_STOCK_ARCHIVE: ${{ github.workspace }}/.build10-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD10_PRIVATE: ${{ github.workspace }}/.build10-work/private-super-NOT-UPLOADED
+      BUILD10_REPORTS: ${{ github.workspace }}/.build10-work/report
+      ROM_NAME: yunluo_MIUI14_Global_Build10_93Removed_17Kept_StockGallery_NoMiVideo_NoPhoton_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build10-final-stock-gallery
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Build 10 exact restoration policy and scripts
+        run: |
+          set -euo pipefail
+          for script in scripts/build10_targets.py scripts/build9_cleanup.py scripts/pack_super_build10.py scripts/repack_build10_fastboot.py tests/test_build10_policy.py; do
+            test -s "$script" || { echo "::error::Missing Build 10 script $script"; exit 1; }
+          done
+          python3 -m py_compile scripts/build10_targets.py scripts/pack_super_build10.py scripts/repack_build10_fastboot.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from build10_targets import build10_targets,GALLERY_LOCATION,MIVIDEO_LOCATION,CALENDAR_LOCATION,EXTRA_PACKAGE_IDS
+          removed,_,protected,kept=build10_targets()
+          assert (len(removed),len(kept),len(protected))==(91,17,3)
+          assert GALLERY_LOCATION in kept and GALLERY_LOCATION not in removed
+          assert CALENDAR_LOCATION in kept and MIVIDEO_LOCATION in removed
+          assert 'product_a:/priv-app/MIServiceGlobalPad/MIServiceGlobalPad.apk' in removed
+          assert EXTRA_PACKAGE_IDS=={'com.google.android.apps.restore','com.wdstechnology.android.kryten'}
+          print('Build 10 strict policy: 91 baseline exclusions + two stock discoveries, 17 stock kept, zero extra APKs')
+          PY
+      - name: Install pinned Android image tools and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip python3-pyflakes
+          python3 scripts/inventory.py --install-tools
+      - name: Check Python undefined names before any multi-gigabyte firmware build
+        run: |
+          set -euo pipefail
+          pyflakes scripts/repack_build10_fastboot.py scripts/pack_super_build10.py scripts/build10_cleanup.py \
+            > "$RUNNER_TEMP/build10-pyflakes.txt" 2>&1 || true
+          if grep -E 'undefined name' "$RUNNER_TEMP/build10-pyflakes.txt"; then
+            echo "Undefined Python variable detected; refusing to waste runner time" >&2
+            exit 1
+          fi
+          echo "No undefined Python names in Build 10 scripts"
+      - name: Prove EROFS excludes individual library files, without removing parent directory
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/source/lib64" "$TMP/mount"
+          echo remove > "$TMP/source/lib64/libOrphanJNI.so"
+          echo preserve > "$TMP/source/lib64/libCore.so"
+          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          fsck.erofs "$TMP/probe.erofs"
+          sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
+          test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
+          test "$(cat "$TMP/mount/lib64/libCore.so")" = preserve
+          sudo umount "$TMP/mount"
+          echo "Verified individual .so exclusion leaves shared lib64 directory intact"
+      - name: Download pinned original MIUI 14 Global fastboot ROM and verify MD5
+        run: |
+          mkdir -p "$BUILD10_REPORTS" "$(dirname "$BUILD10_STOCK_ARCHIVE")"
+          python3 scripts/download.py --output "$BUILD10_STOCK_ARCHIVE" --report "$BUILD10_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD10_STOCK_ARCHIVE" | md5sum -c -
+      - name: Build private super from original Xiaomi firmware with Gallery restored
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=BUILD10_STOCK_ARCHIVE,BUILD10_PRIVATE,BUILD10_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build10.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD10_PRIVATE" "$BUILD10_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib,sys
+          sys.path.insert(0,'scripts')
+          from build10_targets import build10_targets,EXTRA_PACKAGE_IDS
+          m=json.loads((pathlib.Path(os.environ['BUILD10_PRIVATE'])/'manifest.json').read_text())
+          removed,_,_,kept=build10_targets()
+          assert m['build']=='10-final'
+          assert m['source']=='fresh MD5-verified original Xiaomi MIUI 14 Global'
+          assert m['total_directories_removed']==93
+          assert m['build10_original_kept']==17 and set(m['build10_kept_locations'])==set(kept)
+          assert m['gallery_preserved'] is True and m['calendar_restored'] is True
+          assert m['additional_apks_installed']==0 and 'photon' not in m
+          assert set(m['build10_extra_packages'])==EXTRA_PACKAGE_IDS
+          assert set(x['location'] for x in m['excluded_folders'])==set(removed)|set(m['build10_extra_locations'])
+          assert m['lp_metadata_preserved'] and m['other_regions_unchanged']
+          assert m['haptic_framework_untouched']
+          assert m['build10_extra_files_removed']>=1
+          print('Verified fresh-source Build 10 super: 93 removals, Gallery kept, MiVideo/Photon absent')
+          PY
+      - name: Replace only super and vbmeta in complete original fastboot firmware and recalculate CRC lists
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build10_fastboot.py \
+            --archive "$BUILD10_STOCK_ARCHIVE" \
+            --artifact "$BUILD10_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD10_REPORTS"
+      - name: Verify complete firmware ZIP and split into safe-sized Release assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,zipfile
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          f=root/os.environ["ROM_NAME"]
+          report=json.loads((pathlib.Path(os.environ["BUILD10_REPORTS"])/"VERIFICATION.json").read_text())
+          assert report["app_folders_removed"]==93 and report["original_apps_retained"]==17
+          assert report["added_apks"]==0 and report["gallery_preserved"] is True and report["photon_gallery_preinstalled"] is False
+          assert report["calendar_restored"] is True
+          assert f.stat().st_size==report["firmware_zip_bytes"]
+          assert hashlib.file_digest(f.open("rb"),"sha256").hexdigest()==report["firmware_zip_sha256"]
+          with zipfile.ZipFile(f) as z:
+              assert z.testzip() is None
+              keys=z.namelist()
+              for suffix in ("/images/super.img","/images/vbmeta.img","/images/crclist.txt",
+                             "/images/sparsecrclist.txt","/flash_all.sh"):
+                  assert sum(n.endswith(suffix) for n in keys)==1,suffix
+          size=f.stat().st_size
+          # GitHub Release asset max is 2GiB. Use two parts if possible, else three.
+          asset_limit=1_950_000_000
+          part_count=max(2,(size+asset_limit-1)//asset_limit)
+          piece=(size+part_count-1)//part_count
+          assert piece<=asset_limit, "Firmware part exceeds conservative GitHub asset limit"
+          names=[f.name+f".{i:03d}" for i in range(1,part_count+1)]
+          with f.open("rb") as source:
+              for index,name in enumerate(names):
+                  out=root/name
+                  length=piece if index<part_count-1 else size-piece*(part_count-1)
+                  with out.open("wb") as sink:
+                      while length:
+                          chunk=source.read(min(8*1024*1024,length))
+                          if not chunk:raise RuntimeError("Unexpected ZIP truncation")
+                          sink.write(chunk);length-=len(chunk)
+          if sum((root/name).stat().st_size for name in names)!=size:
+              raise RuntimeError("Firmware parts size mismatch")
+          digest=hashlib.sha256()
+          parts=[]
+          for name in names:
+              ph=hashlib.sha256()
+              with (root/name).open("rb") as inp:
+                  while chunk:=inp.read(8*1024*1024):
+                      digest.update(chunk);ph.update(chunk)
+              parts.append({"name":name,"bytes":(root/name).stat().st_size,"sha256":ph.hexdigest()})
+          if digest.hexdigest()!=report["firmware_zip_sha256"]:
+              raise RuntimeError("Split ZIP reassembly SHA256 mismatch")
+          (root/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["name"]+"\n" for x in parts))
+          (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "device":"yunluo","build":10,"zip_name":f.name,
+              "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
+              "parts":parts,"app_folders_removed":93,"original_stock_apps_preserved":17,
+              "photon_gallery_preinstalled":False,"mivideo_preinstalled":False,"added_apks":0,
+              "extra_native_jni_libraries_removed":1,
+              "miravision_jni_preserved":True,
+          },indent=2)+"\n")
+          print(part_count,"firmware parts verified; ZIP SHA256",report["firmware_zip_sha256"])
+          PY
+          rm "$ROM_NAME"
+      - name: Publish Build 10 final package with verified parts (device boot not yet confirmed)
+        run: |
+          set -euo pipefail
+          if gh release view "$ROM_RELEASE" -R "$GH_REPO" >/dev/null 2>&1; then
+            echo "Build 10 release tag already exists. Refusing overwrite" >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/build10-notes.md" <<'EOF'
+          ## Redmi Pad yunluo — MIUI 14 Build 10 Final Package
+
+          **Built from fresh original Xiaomi MIUI 14 V14.0.4.0.TLYMIXM Android 13 fastboot firmware.**
+          Original archive MD5, source super SHA256, partition metadata and rebuilt
+          EROFS filesystem contents were checked. The Build 9 release ZIP was NOT used.
+
+          **Changes compared with Build 9:**
+          - RESTORED complete stock MIUI Gallery (com.miui.gallery) folder from original stock firmware.
+          - Mi Video (MIUIVideoPlayer) REMAINS REMOVED; the original Gallery might require an external video player.
+          - Photon Gallery is NOT preinstalled. Install any gallery yourself later.
+          - Google Calendar and all 16 other previously preserved reviewed stock APKs remain.
+          - 93 complete selected original app folders removed (91 reviewed + 2 exact-package discoveries).
+          - MIService, Analytics, MiLink, Notes, and other apps only referenced
+            as optional names in the Security Center DEX are NOT blindly restored.
+            No mandatory removed app dependency was proven by the audit.
+          - Xiaomi Security Center, Wi-Fi/vendor HAL, boot image and protected
+            system components are preserved untouched.
+          - No APKs injected. No upstream binary APKs re-signed.
+
+          **Contents and safeguards:** Full Xiaomi fastboot firmware reconstructed
+          from original stock archive, original flash scripts and other images untouched;
+          only super.img and unlocked-bootloader-compatible vbmeta.img modified,
+          crclist.txt/sparsecrclist.txt recalculated and verified; LP metadata preserved.
+
+          **Download all numbered ZIP fragments**, along with ZIP_SHA256.txt,
+          PARTS_SHA256.txt and DOWNLOAD_MANIFEST.json, into the same folder.
+          On Linux, combine and verify:
+
+              cat yunluo_MIUI14_Global_Build10_93Removed_17Kept_StockGallery_NoMiVideo_NoPhoton_Fastboot.zip.0* > yunluo_MIUI14_Global_Build10_93Removed_17Kept_StockGallery_NoMiVideo_NoPhoton_Fastboot.zip
+              sha256sum -c ZIP_SHA256.txt
+
+          **IMPORTANT:** "Final Package" means automated offline validation
+          completed. Build 10 has NOT been tested on your physical device.
+          Your successfully booted Build 9 remains the tested fallback.
+          Unlocked bootloader required. Flashing may wipe userdata.
+          Never use flash_all_lock.sh or flash_all_lock.bat.
+          Xiaomi security and MediaTek Wi-Fi HAL log warnings are NOT claimed
+          resolved, as they also appear in original HyperOS.
+          GitHub Release assets are persistent, unlike expiring Actions artifacts.
+          EOF
+          cd "$RUNNER_TEMP/packaged"
+          gh release create "$ROM_RELEASE" "$ROM_NAME".0* \
+            ZIP_SHA256.txt PARTS_SHA256.txt DOWNLOAD_MANIFEST.json \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad MIUI 14 - Build 10 Final Package (Gallery Restored, No Photon)" \
+            --notes-file "$RUNNER_TEMP/build10-notes.md" --latest=false
+      - name: Upload small Build 10 review and offline verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build10-cleanup-and-offline-verification
+          path: ${{ github.workspace }}/.build10-work/report/
+          retention-days: 30
+          if-no-files-found: warn
