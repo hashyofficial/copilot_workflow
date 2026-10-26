@@ -272,6 +272,19 @@ def photon_overlay(mount, root, signed_apk, aapt):
             if os.getxattr(target,"security.selinux",follow_symlinks=False)!=label:
                 raise RuntimeError("Failed to copy stock app security label")
         os.utime(merged/"app",ns=(parent_stat.st_atime_ns,parent_stat.st_mtime_ns))
+        # OverlayFS manufactures a fresh root inode with a new timestamp and
+        # no SELinux xattr. Restore EXACT original EROFS root metadata too;
+        # this is essential, not an acceptable filesystem difference.
+        root_stat=os.stat(mount,follow_symlinks=False)
+        root_label=os.getxattr(mount,"security.selinux",follow_symlinks=False)
+        if not root_label or b"object_r" not in root_label:
+            raise RuntimeError("Original EROFS root SELinux label unavailable")
+        os.chown(merged,root_stat.st_uid,root_stat.st_gid)
+        os.chmod(merged,root_stat.st_mode & 0o7777)
+        os.setxattr(merged,"security.selinux",root_label,follow_symlinks=False)
+        os.utime(merged,ns=(root_stat.st_atime_ns,root_stat.st_mtime_ns))
+        if os.getxattr(merged,"security.selinux",follow_symlinks=False)!=root_label:
+            raise RuntimeError("OverlayFS root SELinux label could not be restored")
         if sha(dest)!=PHOTON_SHA256:
             raise RuntimeError("Photon Gallery modified during insertion")
         meta={"apk":PHOTON_PATH,"folder":"/app/PhotonGallery",
@@ -394,12 +407,8 @@ def build():
                         original_from_stage={k:v for k,v in staged.items() if k not in additions}
                         stage_diff=compare_trees(before,original_from_stage,[])
                         if not stage_diff["passed"]:
-                            # OverlayFS may synthesize metadata on copied-up
-                            # directories. Diagnose here, but the mounted rebuilt
-                            # EROFS MUST still match original retained entries.
                             report("build9-overlay-staging-diff.json",json.dumps(stage_diff,indent=2)+"\\n")
-                            print("OverlayFS staged metadata differences: "
-                                  +str(stage_diff["different_retained"][:5]),flush=True)
+                            raise RuntimeError("Photon staging changed stock metadata; review build9-overlay-staging-diff.json")
                         mkfs_report(rebuilt,layer,all_exclusions,uuid)
                 else:
                     mkfs_report(rebuilt,mount,all_exclusions,uuid)
