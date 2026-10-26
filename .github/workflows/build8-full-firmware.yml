@@ -1,0 +1,232 @@
+name: MIUI Build 8 - standby full fastboot firmware
+
+# Build 8 staging template based on the verified Build 7 workflow.
+# Manual-only: no push trigger. Configure new Build 8 scripts before first run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD8_STOCK_ARCHIVE: ${{ github.workspace }}/.build8-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD8_PRIVATE: ${{ github.workspace }}/.build8-work/private-super-NOT-UPLOADED
+      BUILD8_REPORTS: ${{ github.workspace }}/.build8-work/report
+      ROM_NAME: yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build8-deep-debloat-experimental
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require configured Build 8 scripts before any downloads or firmware modification
+        run: |
+          set -euo pipefail
+          for script in scripts/build8_targets.py scripts/build8_cleanup.py scripts/pack_super_build8.py scripts/repack_build8_fastboot.py; do
+            if [ ! -s "$script" ]; then
+              echo "::error::Build 8 is on standby. Missing configured script: $script"
+              echo "::error::Configure and review Build 8 changes before starting the workflow."
+              exit 1
+            fi
+          done
+          echo "Build 8 source scripts are present; continue the verified firmware pipeline"
+      - name: Compile and validate Build 8 package protection policy and native libraries
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build5_gallery_targets.py scripts/build8_cleanup.py scripts/pack_super_build8.py scripts/repack_build8_fastboot.py scripts/build8_targets.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'scripts')
+          from build8_targets import build8_targets, MIRAVISION_JNI
+          from build8_cleanup import APPROVED_PINNED_NATIVE
+          removed,_,protected,kept = build8_targets()
+          assert len(removed)==91 and len(kept)==17 and len(protected)==3
+          assert len(MIRAVISION_JNI)==2
+          assert set(APPROVED_PINNED_NATIVE)=={"/system/lib64/libprintspooler_jni.so"}
+          print("Build 8 preflight: 91 complete deletions, 17 kept apps, 2 MiraVision JNI retained")
+          PY
+          df -h "$RUNNER_TEMP"
+      - name: Install pinned Android image tools and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip python3-pyflakes
+          python3 scripts/inventory.py --install-tools
+      - name: Check Python undefined names before any multi-gigabyte firmware build
+        run: |
+          set -euo pipefail
+          pyflakes scripts/repack_build8_fastboot.py scripts/pack_super_build8.py scripts/build8_cleanup.py \
+            > "$RUNNER_TEMP/build8-pyflakes.txt" 2>&1 || true
+          if grep -E 'undefined name' "$RUNNER_TEMP/build8-pyflakes.txt"; then
+            echo "Undefined Python variable detected; refusing to waste runner time" >&2
+            exit 1
+          fi
+          echo "No undefined Python names in Build 8 scripts"
+      - name: Prove EROFS excludes individual library files, without removing parent directory
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/source/lib64" "$TMP/mount"
+          echo remove > "$TMP/source/lib64/libOrphanJNI.so"
+          echo preserve > "$TMP/source/lib64/libCore.so"
+          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          fsck.erofs "$TMP/probe.erofs"
+          sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
+          test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
+          test "$(cat "$TMP/mount/lib64/libCore.so")" = preserve
+          sudo umount "$TMP/mount"
+          echo "Verified individual .so exclusion leaves shared lib64 directory intact"
+      - name: Download pinned original MIUI 14 Global fastboot ROM and verify MD5
+        run: |
+          mkdir -p "$BUILD8_REPORTS" "$(dirname "$BUILD8_STOCK_ARCHIVE")"
+          python3 scripts/download.py --output "$BUILD8_STOCK_ARCHIVE" --report "$BUILD8_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD8_STOCK_ARCHIVE" | md5sum -c -
+      - name: Rebuild private Build 8 super from original Xiaomi firmware
+        run: |
+          sudo --preserve-env=BUILD8_STOCK_ARCHIVE,BUILD8_PRIVATE,BUILD8_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build8.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD8_PRIVATE" "$BUILD8_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib,sys
+          sys.path.insert(0, 'scripts')
+          from build8_targets import build8_targets, MIRAVISION_JNI
+          doc=json.loads((pathlib.Path(os.environ["BUILD8_PRIVATE"])/"manifest.json").read_text())
+          removed,_,_,kept=build8_targets()
+          assert doc["model"]=="yunluo" and doc["build"]=="7-experimental"
+          assert doc["total_directories_removed"]==91 and doc["build8_restored_app_folders"]==17
+          assert set(doc["build8_kept_locations"])==set(kept)
+          assert doc["additional_apks_installed"]==0 and doc["gallery_preserved"]
+          assert doc["lp_metadata_preserved"] and doc["other_regions_unchanged"]
+          assert doc["cell_broadcast_service_apex_modified"] is False
+          assert doc["build8_miravision_jni_preserved"]==list(MIRAVISION_JNI)
+          libraries=[x["path"] for r in doc["build8_cleanup_by_partition"] for x in r["selected"] if x["kind"]=="native_library"]
+          assert libraries==["/system/lib64/libprintspooler_jni.so"],libraries
+          assert set(d["location"] for d in doc["excluded_folders"])==set(removed)
+          print("Build8 verified: 91 removed; all 17 retained; both MiraVision JNI protected")
+          PY
+      - name: Replace only super and vbmeta in complete original fastboot firmware and recalculate CRC lists
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build8_fastboot.py \
+            --archive "$BUILD8_STOCK_ARCHIVE" \
+            --artifact "$BUILD8_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD8_REPORTS"
+      - name: Verify complete firmware ZIP and split into safe-sized Release assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,zipfile
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          f=root/os.environ["ROM_NAME"]
+          report=json.loads((pathlib.Path(os.environ["BUILD8_REPORTS"])/"VERIFICATION.json").read_text())
+          assert report["app_folders_removed"]==91 and report["original_apps_retained"]==17
+          assert report["gallery_preserved"] is True
+          assert f.stat().st_size==report["firmware_zip_bytes"]
+          assert hashlib.file_digest(f.open("rb"),"sha256").hexdigest()==report["firmware_zip_sha256"]
+          with zipfile.ZipFile(f) as z:
+              assert z.testzip() is None
+              keys=z.namelist()
+              for suffix in ("/images/super.img","/images/vbmeta.img","/images/crclist.txt",
+                             "/images/sparsecrclist.txt","/flash_all.sh"):
+                  assert sum(n.endswith(suffix) for n in keys)==1,suffix
+          size=f.stat().st_size
+          # GitHub Release asset max is 2GiB. Use two parts if possible, else three.
+          asset_limit=1_950_000_000
+          part_count=max(2,(size+asset_limit-1)//asset_limit)
+          piece=(size+part_count-1)//part_count
+          assert piece<=asset_limit, "Firmware part exceeds conservative GitHub asset limit"
+          names=[f.name+f".{i:03d}" for i in range(1,part_count+1)]
+          with f.open("rb") as source:
+              for index,name in enumerate(names):
+                  out=root/name
+                  length=piece if index<part_count-1 else size-piece*(part_count-1)
+                  with out.open("wb") as sink:
+                      while length:
+                          chunk=source.read(min(8*1024*1024,length))
+                          if not chunk:raise RuntimeError("Unexpected ZIP truncation")
+                          sink.write(chunk);length-=len(chunk)
+          if sum((root/name).stat().st_size for name in names)!=size:
+              raise RuntimeError("Firmware parts size mismatch")
+          digest=hashlib.sha256()
+          parts=[]
+          for name in names:
+              ph=hashlib.sha256()
+              with (root/name).open("rb") as inp:
+                  while chunk:=inp.read(8*1024*1024):
+                      digest.update(chunk);ph.update(chunk)
+              parts.append({"name":name,"bytes":(root/name).stat().st_size,"sha256":ph.hexdigest()})
+          if digest.hexdigest()!=report["firmware_zip_sha256"]:
+              raise RuntimeError("Split ZIP reassembly SHA256 mismatch")
+          (root/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["name"]+"\n" for x in parts))
+          (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "device":"yunluo","build":7,"zip_name":f.name,
+              "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
+              "parts":parts,"app_folders_removed":91,"original_stock_apps_preserved":17,
+              "extra_native_jni_libraries_removed":1,
+              "miravision_jni_preserved":True,
+          },indent=2)+"\n")
+          print(part_count,"firmware parts verified; ZIP SHA256",report["firmware_zip_sha256"])
+          PY
+          rm "$ROM_NAME"
+      - name: Publish Build 8 release with checksum-verified firmware parts
+        run: |
+          set -euo pipefail
+          if gh release view "$ROM_RELEASE" -R "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release tag already exists. Refusing to overwrite existing artifacts." >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/build8-notes.md" <<'EOF'
+          ## Redmi Pad yunluo — Build 8 Experimental (MIUI 14 Global, Android 13)
+
+          **Base:** Official original Xiaomi V14.0.4.0.TLYMIXM fastboot ROM (fresh stock).
+          **App debloat:** Baseline inherited from successful Build 7; update exact targets and counts when Build 8 is defined.
+          **Baseline keep-list:** 17 full original stock app folders (subject to Build 8 instructions):
+          ContactsProvider, MiraVision, Turbo, MIUIXiaomiAccountGlobal, MIUIVideoPlayer,
+          MiuiScanner, MIUIDeskClockPadGlobal, MIUICloudServiceGlobal,
+          MIUICalculatorGlobalPad, MIMediaEditorGlobal, GoogleContacts, ExtraPhotoGlobal,
+          SoundPicker, FindDevice, Gallery_T_Global, MIUICloudBackupGlobal,
+          MIUIMiCloudSync.
+
+          Both standalone MiraVision JNI libraries (32-bit and 64-bit) remain untouched.
+          Only the SHA256-reviewed libprintspooler_jni.so (64-bit) is removed.
+          Other uncertain/shared native libraries are retained.
+
+          Original boot.img, recovery and all other non-target stock images are unchanged.
+          No APK or root manager is installed. New super.img, flags=3 vbmeta.img,
+          corrected crclist.txt and sparsecrclist.txt; original flashing scripts
+          and scatter files stay untouched.
+
+          **Download ALL .zip.001, .002 (and .003 if present)**, along with
+          ZIP_SHA256.txt and PARTS_SHA256.txt, into the same folder.
+          On Linux, concatenate in ascending order:
+
+              cat yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip.0* > yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
+              sha256sum -c ZIP_SHA256.txt
+
+          These are non-expiring GitHub Release assets, not 30-day Actions artifacts.
+          **Experimental: firmware not device-boot-tested.** Keep your working
+          Build 5 backup. UNLOCKED BOOTLOADER ONLY. Never use flash_all_lock.sh.
+          The stock flash_all.sh wipes userdata; back up your personal data first.
+          EOF
+          cd "$RUNNER_TEMP/packaged"
+          gh release create "$ROM_RELEASE" "$ROM_NAME".0* \
+            ZIP_SHA256.txt PARTS_SHA256.txt DOWNLOAD_MANIFEST.json \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad MIUI 14 Build 8 - Deep Debloat (Experimental)" \
+            --notes-file "$RUNNER_TEMP/build8-notes.md" \
+            --latest=false --prerelease
+      - name: Upload small Build 8 review and offline verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build8-cleanup-and-offline-verification
+          path: ${{ github.workspace }}/.build8-work/report/
+          retention-days: 30
+          if-no-files-found: warn
