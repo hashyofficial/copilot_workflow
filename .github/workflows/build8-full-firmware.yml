@@ -1,8 +1,14 @@
 name: MIUI Build 8 - standby full fastboot firmware
 
-# Build 8 staging template based on the verified Build 7 workflow.
-# Manual-only: no push trigger. Configure new Build 8 scripts before first run.
+# Derived from successful MIUI Build 7 workflow (run 40250356507).
+# Build 8 restores 2 additional whole original app directories (19 kept / 89 removed).
+# No haptic APK exists in the removal list: unchanged haptic framework on no-motor tablet.
+# This workflow is triggered on this final YAML change, and by manual dispatch.
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build8-full-firmware.yml
   workflow_dispatch:
 
 permissions:
@@ -18,11 +24,11 @@ jobs:
       BUILD8_STOCK_ARCHIVE: ${{ github.workspace }}/.build8-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
       BUILD8_PRIVATE: ${{ github.workspace }}/.build8-work/private-super-NOT-UPLOADED
       BUILD8_REPORTS: ${{ github.workspace }}/.build8-work/report
-      ROM_NAME: yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
+      ROM_NAME: yunluo_MIUI14_Global_Build8_89Folders_19Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
       ROM_RELEASE: yunluo-miui14-build8-deep-debloat-experimental
     steps:
       - uses: actions/checkout@v4
-      - name: Require configured Build 8 scripts before any downloads or firmware modification
+      - name: Verify complete Build 8 scripts before any downloads or firmware modification
         run: |
           set -euo pipefail
           for script in scripts/build8_targets.py scripts/build8_cleanup.py scripts/pack_super_build8.py scripts/repack_build8_fastboot.py; do
@@ -32,7 +38,8 @@ jobs:
               exit 1
             fi
           done
-          echo "Build 8 source scripts are present; continue the verified firmware pipeline"
+          test -s config/build8-keep-19.txt
+          echo "Build 8 source scripts and 19-app keep-list are present"
       - name: Compile and validate Build 8 package protection policy and native libraries
         run: |
           set -euo pipefail
@@ -45,10 +52,17 @@ jobs:
           from build8_targets import build8_targets, MIRAVISION_JNI
           from build8_cleanup import APPROVED_PINNED_NATIVE
           removed,_,protected,kept = build8_targets()
-          assert len(removed)==91 and len(kept)==17 and len(protected)==3
+          assert len(removed)==89 and len(kept)==19 and len(protected)==3
+          from pathlib import PurePosixPath
+          required={
+            "system_a:/system/priv-app/Backup/Backup.apk",
+            "system_a:/system/priv-app/UserDictionaryProvider/UserDictionaryProvider.apk",
+          }
+          assert required.issubset(kept) and not (required & removed)
+          assert len({(p,str(apk.parent)) for p,apk in removed.values()})==89
           assert len(MIRAVISION_JNI)==2
           assert set(APPROVED_PINNED_NATIVE)=={"/system/lib64/libprintspooler_jni.so"}
-          print("Build 8 preflight: 91 complete deletions, 17 kept apps, 2 MiraVision JNI retained")
+          print("Build 8 preflight: 89 complete deletions, 19 kept apps, 2 MiraVision JNI retained")
           PY
           df -h "$RUNNER_TEMP"
       - name: Install pinned Android image tools and EROFS utilities
@@ -73,7 +87,7 @@ jobs:
           mkdir -p "$TMP/source/lib64" "$TMP/mount"
           echo remove > "$TMP/source/lib64/libOrphanJNI.so"
           echo preserve > "$TMP/source/lib64/libCore.so"
-          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          mkfs.erofs -T 1900000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
           fsck.erofs "$TMP/probe.erofs"
           sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
           test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
@@ -85,7 +99,7 @@ jobs:
           mkdir -p "$BUILD8_REPORTS" "$(dirname "$BUILD8_STOCK_ARCHIVE")"
           python3 scripts/download.py --output "$BUILD8_STOCK_ARCHIVE" --report "$BUILD8_REPORTS/stock-download.json"
           echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD8_STOCK_ARCHIVE" | md5sum -c -
-      - name: Rebuild private Build 8 super from original Xiaomi firmware
+      - name: Rebuild private Build 8 super from original Xiaomi firmware keeping 19 full APK folders
         run: |
           sudo --preserve-env=BUILD8_STOCK_ARCHIVE,BUILD8_PRIVATE,BUILD8_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
             python3 scripts/pack_super_build8.py
@@ -97,16 +111,18 @@ jobs:
           doc=json.loads((pathlib.Path(os.environ["BUILD8_PRIVATE"])/"manifest.json").read_text())
           removed,_,_,kept=build8_targets()
           assert doc["model"]=="yunluo" and doc["build"]=="7-experimental"
-          assert doc["total_directories_removed"]==91 and doc["build8_restored_app_folders"]==17
+          assert doc["total_directories_removed"]==89 and doc["build8_restored_app_folders"]==19
           assert set(doc["build8_kept_locations"])==set(kept)
-          assert doc["additional_apks_installed"]==0 and doc["gallery_preserved"]
+          assert "Backup" in doc["build8_kept_folders"]
+          assert "UserDictionaryProvider" in doc["build8_kept_folders"]
+          assert doc["haptic_framework_untouched"] and doc["additional_apks_installed"]==0 and doc["gallery_preserved"]
           assert doc["lp_metadata_preserved"] and doc["other_regions_unchanged"]
           assert doc["cell_broadcast_service_apex_modified"] is False
           assert doc["build8_miravision_jni_preserved"]==list(MIRAVISION_JNI)
           libraries=[x["path"] for r in doc["build8_cleanup_by_partition"] for x in r["selected"] if x["kind"]=="native_library"]
           assert libraries==["/system/lib64/libprintspooler_jni.so"],libraries
           assert set(d["location"] for d in doc["excluded_folders"])==set(removed)
-          print("Build8 verified: 91 removed; all 17 retained; both MiraVision JNI protected")
+          print("Build8 verified: 89 complete app folders removed; Backup, UserDictionaryProvider and 17 others retained; framework unmodified")
           PY
       - name: Replace only super and vbmeta in complete original fastboot firmware and recalculate CRC lists
         run: |
@@ -126,8 +142,9 @@ jobs:
           root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
           f=root/os.environ["ROM_NAME"]
           report=json.loads((pathlib.Path(os.environ["BUILD8_REPORTS"])/"VERIFICATION.json").read_text())
-          assert report["app_folders_removed"]==91 and report["original_apps_retained"]==17
+          assert report["app_folders_removed"]==89 and report["original_apps_retained"]==19
           assert report["gallery_preserved"] is True
+          assert report["original_apps_retained"]==19
           assert f.stat().st_size==report["firmware_zip_bytes"]
           assert hashlib.file_digest(f.open("rb"),"sha256").hexdigest()==report["firmware_zip_sha256"]
           with zipfile.ZipFile(f) as z:
@@ -168,7 +185,7 @@ jobs:
           (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
               "device":"yunluo","build":7,"zip_name":f.name,
               "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
-              "parts":parts,"app_folders_removed":91,"original_stock_apps_preserved":17,
+              "parts":parts,"app_folders_removed":89,"original_stock_apps_preserved":19,
               "extra_native_jni_libraries_removed":1,
               "miravision_jni_preserved":True,
           },indent=2)+"\n")
@@ -186,13 +203,21 @@ jobs:
           ## Redmi Pad yunluo — Build 8 Experimental (MIUI 14 Global, Android 13)
 
           **Base:** Official original Xiaomi V14.0.4.0.TLYMIXM fastboot ROM (fresh stock).
-          **App debloat:** Baseline inherited from successful Build 7; update exact targets and counts when Build 8 is defined.
-          **Baseline keep-list:** 17 full original stock app folders (subject to Build 8 instructions):
+          **App debloat:** 89 complete app folders removed from 108 original targets.
+          **New fixes:** Restored the ENTIRE ORIGINAL system_a:/system/priv-app/Backup
+          and system_a:/system/priv-app/UserDictionaryProvider folders, with all related files.
+          This restores Xiaomi local backup and Android user-dictionary provider; cloud consent
+          error 52003 requires separate Xiaomi privacy/account authorization.
+          **Preserved:** 19 complete original stock app folders (17 from Build 7 + 2 new):
           ContactsProvider, MiraVision, Turbo, MIUIXiaomiAccountGlobal, MIUIVideoPlayer,
           MiuiScanner, MIUIDeskClockPadGlobal, MIUICloudServiceGlobal,
           MIUICalculatorGlobalPad, MIMediaEditorGlobal, GoogleContacts, ExtraPhotoGlobal,
           SoundPicker, FindDevice, Gallery_T_Global, MIUICloudBackupGlobal,
-          MIUIMiCloudSync.
+          MIUIMiCloudSync, Backup, UserDictionaryProvider.
+
+          **Haptic note:** Redmi Pad yunluo has no vibration motor. No third APK exists
+          for the reported MIUI framework haptic resource warning. Framework/vendor code
+          is preserved rather than risking a boot failure; this warning is not confirmed fixed.
 
           Both standalone MiraVision JNI libraries (32-bit and 64-bit) remain untouched.
           Only the SHA256-reviewed libprintspooler_jni.so (64-bit) is removed.
@@ -207,12 +232,12 @@ jobs:
           ZIP_SHA256.txt and PARTS_SHA256.txt, into the same folder.
           On Linux, concatenate in ascending order:
 
-              cat yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip.0* > yunluo_MIUI14_Global_Build8_91Folders_17Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
+              cat yunluo_MIUI14_Global_Build8_89Folders_19Kept_1OrphanJNI_AVBDisabled_Fastboot.zip.0* > yunluo_MIUI14_Global_Build8_89Folders_19Kept_1OrphanJNI_AVBDisabled_Fastboot.zip
               sha256sum -c ZIP_SHA256.txt
 
           These are non-expiring GitHub Release assets, not 30-day Actions artifacts.
           **Experimental: firmware not device-boot-tested.** Keep your working
-          Build 5 backup. UNLOCKED BOOTLOADER ONLY. Never use flash_all_lock.sh.
+          Build 7 backup. UNLOCKED BOOTLOADER ONLY. Never use flash_all_lock.sh.
           The stock flash_all.sh wipes userdata; back up your personal data first.
           EOF
           cd "$RUNNER_TEMP/packaged"
