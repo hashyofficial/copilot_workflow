@@ -4,7 +4,6 @@ name: MIUI Build 10 - Fresh Stock Gallery Restoration (No Photon)
 # 93 app directories removed, 17 kept, Gallery restored, Mi Video removed.
 # Do not restore unverified MIService or other optional package references.
 on: final rebuilt EROFS remains the authoritative metadata identity check; reuse source extracts.
-# Revision 2: preserve original stock root directory SELinux and timestamps in Photon staging.
 on:
   push:
     branches: [build10/fresh-stock-final]
@@ -57,7 +56,7 @@ jobs:
       - name: Check Python undefined names before any multi-gigabyte firmware build
         run: |
           set -euo pipefail
-          pyflakes scripts/repack_build10_fastboot.py scripts/pack_super_build10.py scripts/build10_cleanup.py \
+          pyflakes scripts/repack_build10_fastboot.py scripts/pack_super_build10.py scripts/build9_cleanup.py \
             > "$RUNNER_TEMP/build10-pyflakes.txt" 2>&1 || true
           if grep -E 'undefined name' "$RUNNER_TEMP/build10-pyflakes.txt"; then
             echo "Undefined Python variable detected; refusing to waste runner time" >&2
