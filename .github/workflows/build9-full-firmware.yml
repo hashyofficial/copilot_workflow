@@ -1,0 +1,286 @@
+name: MIUI Build 9 - Final Candidate with Photon Gallery
+
+# Derived from successful MIUI Build 7 workflow (run 40250356507).
+# Build 9 removes four more gallery/media apps, restores Calendar, removes Android Switch and Kryten by package ID, and adds signed Photon.
+# Preserve haptic, MiraVision JNI, boot.img and verified stock checksum/partition safeguards.
+# Triggers on this workflow file's changes and on manual workflow dispatch.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build9-full-firmware.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD9_STOCK_ARCHIVE: ${{ github.workspace }}/.build9-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD9_PRIVATE: ${{ github.workspace }}/.build9-work/private-super-NOT-UPLOADED
+      BUILD9_REPORTS: ${{ github.workspace }}/.build9-work/report
+      BUILD9_PHOTON_APK: ${{ github.workspace }}/.build9-work/PhotonGallery-arm64-v8a.apk
+      ROM_NAME: yunluo_MIUI14_Global_Build9_94Folders_16Kept_PhotonGallery_AVBDisabled_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build9-final-photon-candidate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Build 9 repository scripts and keep policy before downloading
+        run: |
+          set -euo pipefail
+          for script in scripts/build9_targets.py scripts/build9_cleanup.py scripts/pack_super_build9.py scripts/repack_build9_fastboot.py tests/test_build9_policy.py; do
+            test -s "$script" || { echo "::error::Missing Build 9 script $script"; exit 1; }
+          done
+          python3 -m py_compile scripts/build9_targets.py scripts/build9_cleanup.py scripts/pack_super_build9.py scripts/repack_build9_fastboot.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from build9_targets import (build9_targets,REMOVE_FROM_KEEP,RESTORE_CALENDAR,EXTRA_PACKAGE_IDS,PHOTON_SHA256)
+          removed,_,protected,kept=build9_targets()
+          assert len(removed)==92 and len(kept)==16 and len(protected)==3
+          assert REMOVE_FROM_KEEP.issubset(removed) and RESTORE_CALENDAR in kept
+          assert EXTRA_PACKAGE_IDS=={"com.google.android.apps.restore","com.wdstechnology.android.kryten"}
+          assert len(PHOTON_SHA256)==64
+          print("Build 9: 92 original removals + 2 discovered originals; 16 retained; Photon v2.1.3")
+          PY
+      - name: Install pinned Android image tools and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip python3-pyflakes
+          python3 scripts/inventory.py --install-tools
+      - name: Check Python undefined names before any multi-gigabyte firmware build
+        run: |
+          set -euo pipefail
+          pyflakes scripts/repack_build9_fastboot.py scripts/pack_super_build9.py scripts/build9_cleanup.py \
+            > "$RUNNER_TEMP/build9-pyflakes.txt" 2>&1 || true
+          if grep -E 'undefined name' "$RUNNER_TEMP/build9-pyflakes.txt"; then
+            echo "Undefined Python variable detected; refusing to waste runner time" >&2
+            exit 1
+          fi
+          echo "No undefined Python names in Build 9 scripts"
+      - name: Prove EROFS excludes individual library files, without removing parent directory
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/source/lib64" "$TMP/mount"
+          echo remove > "$TMP/source/lib64/libOrphanJNI.so"
+          echo preserve > "$TMP/source/lib64/libCore.so"
+          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          fsck.erofs "$TMP/probe.erofs"
+          sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
+          test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
+          test "$(cat "$TMP/mount/lib64/libCore.so")" = preserve
+          sudo umount "$TMP/mount"
+          echo "Verified individual .so exclusion leaves shared lib64 directory intact"
+      - name: Verify overlay filesystem and SELinux labels are writable on runner
+        run: |
+          set -euo pipefail
+          T="$(mktemp -d)"
+          sudo mkdir -p "$T/lower/app/Stock" "$T/upper" "$T/work" "$T/merged"
+          echo stock | sudo tee "$T/lower/app/Stock/Stock.apk" >/dev/null
+          sudo python3 - "$T/lower/app/Stock/Stock.apk" <<'PY'
+          import os,sys
+          os.setxattr(sys.argv[1],"security.selinux",b"u:object_r:system_file:s0\\0")
+          PY
+          sudo mount -t overlay overlay -o "lowerdir=$T/lower,upperdir=$T/upper,workdir=$T/work" "$T/merged"
+          sudo mkdir "$T/merged/app/PhotonGallery"
+          echo photon | sudo tee "$T/merged/app/PhotonGallery/PhotonGallery.apk" >/dev/null
+          sudo python3 - "$T/merged/app/PhotonGallery/PhotonGallery.apk" <<'PY'
+          import os,sys
+          f=sys.argv[1]
+          os.setxattr(f,"security.selinux",b"u:object_r:system_file:s0\\0")
+          assert os.getxattr(f,"security.selinux")==b"u:object_r:system_file:s0\\0"
+          PY
+          test "$(cat "$T/merged/app/Stock/Stock.apk")" = stock
+          sudo umount "$T/merged"
+          rm -rf "$T"
+          echo "OverlayFS and security.selinux xattrs supported"
+      - name: Download official SHA256-pinned Photon Gallery v2.1.3 arm64 signed release
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$BUILD9_PHOTON_APK")"
+          curl -fL --retry 3 --retry-delay 3 \
+            "https://github.com/Bn5prS/Photon_Gallery/releases/download/v2.1.3/PhotonGallery-arm64-v8a.apk" \
+            -o "$BUILD9_PHOTON_APK"
+          echo "8a5039b05b7a8b57adb16de006c80e0a37f92debda9d745d3e3c398a4d311fe1  $BUILD9_PHOTON_APK" | sha256sum -c -
+          SIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          test -n "$SIGNER"
+          "$SIGNER" verify --verbose "$BUILD9_PHOTON_APK"
+          python3 - <<'PY'
+          import os,sys,zipfile
+          sys.path.insert(0,"scripts")
+          from combined_preflight import apk_identity,find_aapt
+          p=os.environ["BUILD9_PHOTON_APK"]
+          package,_=apk_identity(find_aapt(),p)
+          assert package=="com.inferno.gallery",package
+          with zipfile.ZipFile(p) as a: assert a.testzip() is None
+          print("Verified signed official PhotonGallery v2.1.3 APK, Android package identity and ZIP integrity")
+          PY
+      - name: Download pinned original MIUI 14 Global fastboot ROM and verify MD5
+        run: |
+          mkdir -p "$BUILD9_REPORTS" "$(dirname "$BUILD9_STOCK_ARCHIVE")"
+          python3 scripts/download.py --output "$BUILD9_STOCK_ARCHIVE" --report "$BUILD9_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD9_STOCK_ARCHIVE" | md5sum -c -
+      - name: Build and verify private Build 9 super with 94 complete removals and one signed Photon APK
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=BUILD9_STOCK_ARCHIVE,BUILD9_PRIVATE,BUILD9_REPORTS,BUILD9_PHOTON_APK,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build9.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD9_PRIVATE" "$BUILD9_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib,sys
+          sys.path.insert(0,"scripts")
+          from build9_targets import (build9_targets,EXTRA_PACKAGE_IDS,PHOTON_SHA256,
+                                      RESTORE_CALENDAR,PHOTON_PACKAGE)
+          m=json.loads((pathlib.Path(os.environ["BUILD9_PRIVATE"])/"manifest.json").read_text())
+          removed,_,_,kept=build9_targets()
+          assert m["build"]=="9-candidate" and m["total_directories_removed"]==94
+          assert m["build9_original_kept"]==16 and set(m["build9_kept_locations"])==set(kept)
+          assert m["calendar_restored"] and not m["gallery_preserved"]
+          assert m["photon"]["apk_sha256"]==PHOTON_SHA256
+          assert m["photon"]["package"]==PHOTON_PACKAGE
+          assert m["photon"]["apk_mode"]=="0o644" and m["photon"]["folder_mode"]=="0o755"
+          assert m["additional_apks_installed"]==1
+          assert set(m["build9_extra_packages"])==EXTRA_PACKAGE_IDS
+          assert set(x["location"] for x in m["excluded_folders"])==set(removed)|set(m["build9_extra_locations"])
+          assert m["lp_metadata_preserved"] and m["other_regions_unchanged"]
+          assert m["haptic_framework_untouched"]
+          assert m["build9_extra_files_removed"]>=1
+          print("Build 9 super verified: 94 app directories removed, 16 original apps kept, Photon Gallery injected safely")
+          PY
+      - name: Replace only super and vbmeta in complete original fastboot firmware and recalculate CRC lists
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build9_fastboot.py \
+            --archive "$BUILD9_STOCK_ARCHIVE" \
+            --artifact "$BUILD9_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD9_REPORTS"
+      - name: Verify complete firmware ZIP and split into safe-sized Release assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,zipfile
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          f=root/os.environ["ROM_NAME"]
+          report=json.loads((pathlib.Path(os.environ["BUILD9_REPORTS"])/"VERIFICATION.json").read_text())
+          assert report["app_folders_removed"]==94 and report["original_apps_retained"]==16
+          assert report["added_apks"]==1 and report["gallery_preserved"] is False
+          assert report["calendar_restored"] is True
+          assert f.stat().st_size==report["firmware_zip_bytes"]
+          assert hashlib.file_digest(f.open("rb"),"sha256").hexdigest()==report["firmware_zip_sha256"]
+          with zipfile.ZipFile(f) as z:
+              assert z.testzip() is None
+              keys=z.namelist()
+              for suffix in ("/images/super.img","/images/vbmeta.img","/images/crclist.txt",
+                             "/images/sparsecrclist.txt","/flash_all.sh"):
+                  assert sum(n.endswith(suffix) for n in keys)==1,suffix
+          size=f.stat().st_size
+          # GitHub Release asset max is 2GiB. Use two parts if possible, else three.
+          asset_limit=1_950_000_000
+          part_count=max(2,(size+asset_limit-1)//asset_limit)
+          piece=(size+part_count-1)//part_count
+          assert piece<=asset_limit, "Firmware part exceeds conservative GitHub asset limit"
+          names=[f.name+f".{i:03d}" for i in range(1,part_count+1)]
+          with f.open("rb") as source:
+              for index,name in enumerate(names):
+                  out=root/name
+                  length=piece if index<part_count-1 else size-piece*(part_count-1)
+                  with out.open("wb") as sink:
+                      while length:
+                          chunk=source.read(min(8*1024*1024,length))
+                          if not chunk:raise RuntimeError("Unexpected ZIP truncation")
+                          sink.write(chunk);length-=len(chunk)
+          if sum((root/name).stat().st_size for name in names)!=size:
+              raise RuntimeError("Firmware parts size mismatch")
+          digest=hashlib.sha256()
+          parts=[]
+          for name in names:
+              ph=hashlib.sha256()
+              with (root/name).open("rb") as inp:
+                  while chunk:=inp.read(8*1024*1024):
+                      digest.update(chunk);ph.update(chunk)
+              parts.append({"name":name,"bytes":(root/name).stat().st_size,"sha256":ph.hexdigest()})
+          if digest.hexdigest()!=report["firmware_zip_sha256"]:
+              raise RuntimeError("Split ZIP reassembly SHA256 mismatch")
+          (root/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["name"]+"\n" for x in parts))
+          (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "device":"yunluo","build":9,"zip_name":f.name,
+              "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
+              "parts":parts,"app_folders_removed":94,"original_stock_apps_preserved":16,
+              "photon_gallery_version":"v2.1.3","added_apks":1,
+              "extra_native_jni_libraries_removed":1,
+              "miravision_jni_preserved":True,
+          },indent=2)+"\n")
+          print(part_count,"firmware parts verified; ZIP SHA256",report["firmware_zip_sha256"])
+          PY
+          rm "$ROM_NAME"
+      - name: Publish Build 9 candidate release with complete checksum-verified firmware parts
+        run: |
+          set -euo pipefail
+          if gh release view "$ROM_RELEASE" -R "$GH_REPO" >/dev/null 2>&1; then
+            echo "Build 9 release tag already exists. Refusing overwrite" >&2
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/build9-notes.md" <<'EOF'
+          ## Redmi Pad yunluo — MIUI 14 Build 9 Final Candidate
+
+          **Base firmware:** Original Xiaomi MIUI 14 V14.0.4.0.TLYMIXM (Android 13), checksum-verified.
+          **Removed 94 complete original app folders:** The previous 92 selected removals
+          plus Android Switch (com.google.android.apps.restore) and OTA Access Point
+          Configuration/Kryten (com.wdstechnology.android.kryten).
+          The four original Build 8 restored Gallery/media folders are removed:
+          Gallery_T_Global, MIUIVideoPlayer, MIMediaEditorGlobal and ExtraPhotoGlobal.
+          **Restored:** Complete original Google Calendar APK folder (CalendarGoogle).
+          **Kept:** Exactly 16 of the 108 original reviewed stock app folders,
+          including Backup, UserDictionaryProvider, MiraVision, ContactsProvider and Xiaomi Account.
+          **Added:** Photon Gallery v2.1.3 (com.inferno.gallery), signed upstream ARM64 release
+          [source](https://github.com/Bn5prS/Photon_Gallery) (GPLv3).
+          Photon release SHA256: 8a5039b05b7a8b57adb16de006c80e0a37f92debda9d745d3e3c398a4d311fe1.
+          Photon placed in product/app as a normal system app with original stock
+          owner, mode and SELinux file-context validation. User grants media access
+          at runtime; no platform/system signing or privileged permissions claimed.
+
+          **Preserved hardware safeguards:** Original boot and all non-super/vbmeta images,
+          original flashing scripts, MiraVision JNI, shared native libraries,
+          LP super metadata, protected services and stock haptic framework.
+          Exactly one independently SHA256-reviewed orphan JNI is removed.
+          Only super.img, vbmeta.img, crclist.txt and sparsecrclist.txt change.
+          vbmeta disables AVB verification for unlocked bootloaders (flags=3).
+
+          **Download all numbered .zip.001/.002/.003 parts plus both SHA256 files.**
+          From the download folder on Linux:
+
+              cat yunluo_MIUI14_Global_Build9_94Folders_16Kept_PhotonGallery_AVBDisabled_Fastboot.zip.0* > yunluo_MIUI14_Global_Build9_94Folders_16Kept_PhotonGallery_AVBDisabled_Fastboot.zip
+              sha256sum -c ZIP_SHA256.txt
+
+          These release assets do not expire after 30 days.
+          **This Build 9 image is not yet device-boot-tested: treat it as a candidate.**
+          Keep the proven working Build 8 firmware. Bootloader must be UNLOCKED.
+          Do NOT use flash_all_lock.sh. Stock flash_all.sh wipes userdata.
+          If Photon already exists as a user app with a different signing
+          certificate, Android may flag signature conflicts; back up that app's
+          data and uninstall the conflicting user copy before flashing.
+          EOF
+          cd "$RUNNER_TEMP/packaged"
+          gh release create "$ROM_RELEASE" "$ROM_NAME".0* \
+            ZIP_SHA256.txt PARTS_SHA256.txt DOWNLOAD_MANIFEST.json \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad MIUI 14 - Build 9 Final Candidate (Photon Gallery)" \
+            --notes-file "$RUNNER_TEMP/build9-notes.md" \
+            --latest=false --prerelease
+      - name: Upload small Build 9 review and offline verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build9-cleanup-and-offline-verification
+          path: ${{ github.workspace }}/.build9-work/report/
+          retention-days: 30
+          if-no-files-found: warn
