@@ -95,9 +95,9 @@ jobs:
           if security_package!='com.miui.securitycenter':raise RuntimeError('Unexpected OEM security app '+security_package)
           import shutil
           shutil.copyfile(candidates[0],root/'Original-MIUISecurityCenterGlobalPad.apk')
-          (root/'all_110_stock_apks.tsv').write_text('\\n'.join('\\t'.join(row) for row in rows)+'\\n')
+          (root/'all_110_stock_apks.tsv').write_text('\n'.join('\t'.join(row) for row in rows)+'\n')
           (root/'securitycenter-original-badging.txt').write_text(subprocess.run([str(aapt),'dump','badging',str(candidates[0])],capture_output=True,text=True,check=True).stdout)
-          (root/'stock-package-locations.json').write_text(json.dumps({'removed':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in removed), 'kept':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in kept),'extras':found},indent=2)+'\\n')
+          (root/'stock-package-locations.json').write_text(json.dumps({'removed':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in removed), 'kept':dict((pkg,loc) for pkg,loc in by_pkg.items() if loc in kept),'extras':found},indent=2)+'\n')
           print('Stock Security Center identified, 94 removed APK identities and 16 retained APK identities verified')
           PY
           python3 research/build9_fixes/audit_security_apk.py \
