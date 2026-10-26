@@ -87,7 +87,7 @@ jobs:
           mkdir -p "$TMP/source/lib64" "$TMP/mount"
           echo remove > "$TMP/source/lib64/libOrphanJNI.so"
           echo preserve > "$TMP/source/lib64/libCore.so"
-          mkfs.erofs -T 1900000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
           fsck.erofs "$TMP/probe.erofs"
           sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
           test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
