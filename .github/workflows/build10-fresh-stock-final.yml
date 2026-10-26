@@ -1,9 +1,8 @@
 name: MIUI Build 10 - Fresh Stock Gallery Restoration (No Photon)
 
-# Rebuild from Xiaomi MD5-verified stock, never from Build 10 artifacts.
+# Rebuild from Xiaomi MD5-verified stock, never from Build 9 release artifacts.
 # 93 app directories removed, 17 kept, Gallery restored, Mi Video removed.
 # Do not restore unverified MIService or other optional package references.
-on: final rebuilt EROFS remains the authoritative metadata identity check; reuse source extracts.
 on:
   push:
     branches: [build10/fresh-stock-final]
