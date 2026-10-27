@@ -35,6 +35,27 @@ PROTECTED_IDS = {
     "com.android.bluetooth", "com.android.camera", "com.mediatek.camera",
     "com.android.provision", "com.android.statementservice",
     "com.mediatek.location.lppe.main",
+    # Keep Google Play framework, device security, oversight, input, networking and software update modules.
+    "com.google.android.gsf", "com.google.android.inputmethod.latin",
+    "com.google.android.webview", "com.google.android.trichromelibrary",
+    "com.google.android.captiveportallogin", "com.google.android.networkstack",
+    "com.google.android.configupdater", "com.google.android.modulemetadata",
+    "com.google.android.partnersetup", "com.google.android.onetimeinitializer",
+    "com.google.android.gms.supervision", "com.google.android.apps.wellbeing",
+    "com.google.android.apps.safetyhub", "com.android.managedprovisioning",
+    "com.google.android.apps.restore", "com.google.android.documentsui",
+    "com.google.android.packageinstaller", "com.miui.home", "miui.systemui.plugin",
+    "com.miui.securitycore", "com.miui.guardprovider", "com.miui.securityadd",
+    "com.xiaomi.misettings", "com.android.camera", "com.miui.gallery",
+    "com.mi.android.globalFileexplorer", "com.android.providers.contacts",
+    "com.android.providers.calendar", "com.android.providers.telephony",
+    "com.android.phone", "com.android.server.telecom",
+    "com.android.credentialmanager", "com.android.intentresolver",
+    "com.android.keychain", "com.android.externalstorage", "com.android.mtp",
+    "com.miui.powerkeeper", "com.miui.daemon", "com.mediatek.duraspeed",
+    "com.miui.core", "com.xiaomi.xmsf", "com.xiaomi.xmsfkeeper",
+    "com.android.settings.intelligence", "com.android.bluetoothmidiservice",
+    "com.android.companiondevicemanager", "com.xiaomi.trustservice",
 }
 SHARED = {"/","/app","/priv-app","/system/app","/system/priv-app",
           "/overlay","/system/overlay","/etc","/lib","/lib64",
@@ -97,7 +118,7 @@ def partition_extent(dump, partition):
         name=re.search(r"(?m)^\s*Name:\s*([A-Za-z0-9_.-]+)\s*$",block)
         if not name or name.group(1)!=partition:
             continue
-        rows=re.findall(r"(?m)^\s*(\d+)\s*\.\.\s*(\d+):\s*linear\s+super\s+(\d+)\s*$",block)
+        rows=re.findall(r"(?m)^\s*(\d+)\s*\.\.\s*(\d+):?\s*linear\s+super\s+(\d+)\s*$",block)
         # Refuse to guess at multi-extents or new lpdump formats.
         if len(rows)!=1:
             raise RuntimeError("Cannot safely replace non-single-extent LP: "+partition)
@@ -137,6 +158,10 @@ def original_index(raw, parts, root, aapt):
                         if not src.is_file() or src.is_symlink():continue
                         rel="/"+str(src.relative_to(mounted))
                         loc=part+":"+rel
+                        if src.stat().st_size==0:
+                            # Official HyperOS mi_ext contains zero-byte placeholder APKs.
+                            # They have no Android manifest and are not packages to uninstall.
+                            continue
                         pkg,label=identity(aapt,src)
                         by_loc[loc]={"package_id":pkg,"label":label,
                                      "folder":part+":"+str(PurePosixPath(rel).parent)}
@@ -168,7 +193,7 @@ def resolve(selectors,by_loc,by_pkg):
             folder=pure.parent
             if str(folder) in SHARED or len(folder.parts)<3:
                 raise RuntimeError("Cannot delete an APK's SHARED parent directory: "+loc)
-            if "/app/" not in path and "/priv-app/" not in path:
+            if not any(partition_kind in path for partition_kind in ("/app/", "/priv-app/", "/data-app/")):
                 raise RuntimeError("Manual audit needed: APK outside a dedicated app folder: "+loc)
             pkg=by_loc[loc]["package_id"]
             if pkg in PROTECTED_IDS:
