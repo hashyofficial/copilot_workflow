@@ -1,5 +1,92 @@
-# Build 11 - HyperOS OS1.0.9.0.ULYMIXM Global on yunluo
-# NO APPS SELECTED YET. Build 11 removal is intentionally inactive.
-# User-approved APK source destinations (partition:/absolute/path/App.apk)
-# OR exact Android package IDs, one per line, go BELOW these comments.
-# Do not copy MIUI Build 10 APK destinations without checking Build 11 inventory.
+# Build 11 - Official HyperOS Global OS1.0.9.0.ULYMIXM - WiFi-only Redmi Pad (yunluo)
+# Reviewed against stock super.img inventory (run 40473373465). 80 package IDs / 81 app folders.
+# Intent: remove optional applications, leave core security, system, Play, settings, camera, files,
+# gallery, Gboard, WebView, launcher, APEX, mainline overlays, parental controls, and telephony services.
+# Each listed Android package ID must resolve exactly against STOCK firmware, or BUILD MUST FAIL.
+# Remove entire dedicated APK-containing folders, never arbitrary shared libraries.
+
+# Google optional applications and voice
+com.google.android.apps.googleassistant
+com.android.hotwordenrollment.okgoogle
+com.android.hotwordenrollment.xgoogle
+com.google.android.tts
+com.google.android.googlequicksearchbox
+com.google.android.as
+com.google.android.as.oss
+com.google.android.calendar
+com.google.android.syncadapters.calendar
+com.google.android.contacts
+com.google.android.apps.subscriptions.red
+com.google.android.apps.magazines
+com.google.android.apps.podcasts
+com.google.android.apps.maps
+com.google.android.gm
+com.android.chrome
+com.google.android.youtube
+com.google.android.apps.youtube.music
+com.google.android.videos
+com.google.android.apps.docs
+com.google.android.apps.photos
+com.google.android.apps.tachyon
+com.google.android.gms.location.history
+com.google.android.feedback
+
+# Xiaomi optional and preinstalled apps
+com.miui.analytics
+com.bsp.catchlog
+com.miui.cloudservice
+com.miui.phrase
+com.miui.micloudsync
+com.xiaomi.discover
+com.xiaomi.account
+com.miui.msa.global
+com.miui.bugreport
+com.miui.cit
+com.miui.videoplayer
+com.milink.service
+com.xiaomi.payment
+cn.wps.xiaomi.abroad.lite
+com.mi.globalbrowser
+com.xiaomi.smarthome
+com.miui.creation
+com.miui.calculator
+com.miui.notes
+com.miui.screenrecorder
+com.android.soundrecorder
+com.miui.weather2
+com.xiaomi.scanner
+com.miui.miservice
+com.miui.mishare.connectivity
+com.xiaomi.aicr
+com.xiaomi.barrage
+com.miui.cloudbackup
+com.miui.cleaner
+com.android.deskclock
+com.android.updater
+
+# Optional engineering media and SIM user interfaces
+com.mediatek.engineermode
+com.mediatek.lbs.em2.ui
+com.mediatek.mdmlsample
+com.debug.loggerui
+com.xiaomi.mtb
+com.mediatek.ygps
+com.modemdebug
+com.mediatek.voicecommand
+com.mediatek.voiceunlock
+com.miui.audiomonitor
+com.mediatek.callrecorder
+com.android.stk
+com.android.simappdialog
+com.android.carrierdefaultapp
+com.android.dreams.basic
+com.android.egg
+com.android.traceur
+com.android.musicfx
+com.google.android.printservice.recommendation
+com.android.printspooler
+com.android.bips
+com.android.bookmarkprovider
+com.android.providers.partnerbookmarks
+com.android.dynsystem
+com.android.apps.tag
