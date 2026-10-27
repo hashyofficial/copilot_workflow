@@ -1,4 +1,5 @@
 name: Build 11 TEST - Stock HyperOS EROFS to ext4 (No Debloat)
+# Attempt 2: measured ext4 size 10% free + 64MiB, fit inside main_a group
 on:
   push:
     branches: [build11/hyperos-global]
