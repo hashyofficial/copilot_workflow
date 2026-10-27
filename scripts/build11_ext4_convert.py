@@ -179,16 +179,35 @@ def main():
         raise RuntimeError("Converted images do not fit original super LP group")
     built=args.work/"super-build11-ext4.sparse.img"
     allocated=create_sparse(images,old_sizes,pre["super_bytes"],pre["main_a_group_max"],built)
-    # lpmake rebuilt the LP metadata; check declared filesystems and partition list.
-    sparse_dump=call(TOOLS/"lpdump","-s","0",built)
-    (args.report/"lpdump-ext4-sparse.txt").write_text(sparse_dump)
+    # Verify every included filesystem by sparse->raw->LP extraction. lpdump cannot
+    # parse Android sparse files directly. Release source images before expanding.
+    expected_hashes={p:sha(img) for p,img in images.items()}
+    for part in TARGETS:
+        if fstype(images[part])!="ext4":raise RuntimeError("Conversion image not ext4: "+part)
+    for image in images.values():
+        image.unlink()
+    checkraw=args.work/"super-repacked-verification.raw.img"
+    call(TOOLS/"simg2img",built,checkraw)
+    if checkraw.stat().st_size!=pre["super_bytes"]:
+        raise RuntimeError("Repacked sparse->raw has incorrect super size")
+    sparse_dump=call(TOOLS/"lpdump","-s","0",checkraw)
+    (args.report/"lpdump-ext4-repacked.txt").write_text(sparse_dump)
     for part in ALL_A:
         if not re.search(r"(?m)^\s*Name:\s*"+re.escape(part)+r"\s*$",sparse_dump):
             raise RuntimeError("LP output missing partition "+part)
+        verdir=args.work/("verified-"+part);verdir.mkdir(exist_ok=True)
+        run(TOOLS/"lpunpack","--slot=0","--partition="+part,checkraw,verdir)
+        repacked=verdir/(part+".img")
+        if sha(repacked)!=expected_hashes[part]:
+            raise RuntimeError("Repacked LP partition bytes DIFFER: "+part)
+        expected_fs="ext4" if part in TARGETS else "erofs"
+        if fstype(repacked)!=expected_fs:
+            raise RuntimeError("Repacked filesystem wrong: "+part)
+        shutil.rmtree(verdir)
     if "virtual_ab_device" not in sparse_dump:raise RuntimeError("Lost virtual_ab metadata flag")
     if built.stat().st_size<1_000_000:raise RuntimeError("Suspiciously small sparse image")
-    for part in TARGETS:
-        if fstype(images[part])!="ext4":raise RuntimeError("Conversion image not ext4: "+part)
+    checkraw.unlink()
+    (args.report/"repacked-partition-sha256.json").write_text(json.dumps(expected_hashes,indent=2)+"\n")
     # Patched stock vbmeta flags are for unlocked test hardware only.
     avb=patch_vbmeta(args.work/"stock-images/vbmeta.img",args.out/"vbmeta.img")
     pieces=[]
