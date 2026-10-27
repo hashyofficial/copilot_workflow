@@ -1,0 +1,83 @@
+name: Build 11 TEST - Stock HyperOS EROFS to ext4 (No Debloat)
+on:
+  push:
+    branches: [build11/hyperos-global]
+    paths:
+      - .github/workflows/build11-ext4-conversion-test.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ext4-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      TEST_DIR: ${{ github.workspace }}/.build11-ext4-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Build 11 scripts and verify experimental safety policy
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build11_source.py scripts/build11_apk_inventory.py scripts/build11_ext4_preflight.py scripts/build11_ext4_convert.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,'scripts')
+          from build11_ext4_convert import TARGETS, ALL_A
+          from build11_source import VERSION, MD5
+          assert TARGETS==("system_a","system_ext_a","product_a")
+          assert "vendor_a" in ALL_A and "mi_ext_a" in ALL_A
+          assert VERSION=="OS1.0.9.0.ULYMIXM"
+          assert MD5=="f8dbb84a10dc96a9d3ce9e78883e87f3"
+          print("No debloat configuration loaded. Convert exactly three partitions.")
+          PY
+          mkdir -p "$TEST_DIR/report" "$TEST_DIR/output"
+          df -h /
+      - name: Install tools for LP images, ext4, EROFS and ramdisk inspection
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils e2fsprogs cpio lz4 attr util-linux file python3 unzip
+          python3 scripts/inventory.py --install-tools
+      - name: Verify official stock ROM, inspect fstabs, convert 3 partitions, audit and repack
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=ANDROID_HOME,GITHUB_WORKSPACE,TEST_DIR \
+            python3 scripts/build11_ext4_convert.py \
+              --work "$TEST_DIR/work" \
+              --report "$TEST_DIR/report" \
+              --out "$TEST_DIR/output"
+          sudo chown -R "$(id -u):$(id -g)" "$TEST_DIR/report" "$TEST_DIR/output"
+          df -h /
+      - name: Check verified artifact manifest
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib
+          base=pathlib.Path(os.environ['TEST_DIR'])/'output'
+          d=json.loads((base/'manifest.json').read_text())
+          assert d['no_app_debloat'] is True
+          assert d['physical_device_boot_tested'] is False
+          assert d['filesystem_metadata_preserved'] is True
+          assert d['repacked_virtual_ab'] is True
+          assert set(d['ext4_partitions'])=={'system_a','product_a','system_ext_a'}
+          assert all(d['stock_fstab_ext4_support'].values())
+          assert d['pieces'] and (base/'vbmeta.img').stat().st_size>0
+          print('Verified offline test artifact:',len(d['pieces']),'sparse parts')
+          PY
+      - name: Publish successful ext4 test firmware images
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-ext4-test-super-vbmeta
+          path: ${{ github.workspace }}/.build11-ext4-test/output/
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
+      - name: Publish investigation logs even on failed safety gates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-ext4-test-audit
+          path: ${{ github.workspace }}/.build11-ext4-test/report/
+          retention-days: 30
+          if-no-files-found: warn
