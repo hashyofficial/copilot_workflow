@@ -64,7 +64,7 @@ def ramdisk_blobs(image):
     raise RuntimeError("Unknown Android boot image header")
 
 def unpack_cpio(blob,dest):
-    if blob.startswith(b"\\x1f\\x8b"):raw=gzip.decompress(blob)
+    if blob.startswith(b"\x1f\x8b"):raw=gzip.decompress(blob)
     elif blob.startswith((bytes.fromhex("02214c18"),bytes.fromhex("04224d18"))):
         p=subprocess.run(["lz4","-d","-c"],input=blob,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         if p.returncode:raise RuntimeError("LZ4 ramdisk failed: "+p.stderr.decode("utf8","replace")[-300:])
@@ -86,7 +86,7 @@ def read_fstabs(root,label):
         if not p.is_file():continue
         if p.stat().st_size>2_000_000:continue
         raw=p.read_bytes()
-        if b"\\x00" in raw:continue
+        if b"\x00" in raw:continue
         content=raw.decode("utf8","replace")
         found.append({"source":label+":"+str(p.relative_to(root)),"lines":[x.strip() for x in content.splitlines() if x.strip() and not x.lstrip().startswith("#")]})
     return found
@@ -133,13 +133,13 @@ def main():
     finally:run("umount",vm)
     fstabmatch=summarize_fstab(fstabs)
     dmp=(a.report/"lpdump-slot0.txt").read_text()
-    group=re.search(r"(?ms)^  Name: main_a\\n  Maximum size: (\\d+)",dmp)
+    group=re.search(r"(?ms)^  Name: main_a\n  Maximum size: (\d+)",dmp)
     if not group:raise RuntimeError("Could not locate original LP main_a group")
     capacities={}
     for part in ("system_a","system_ext_a","product_a","vendor_a","vendor_dlkm_a","odm_dlkm_a","mi_ext_a"):
-        block=re.search(r"(?ms)^  Name: "+re.escape(part)+r"\\n.*?(?=------------------------)",dmp)
+        block=re.search(r"(?ms)^  Name: "+re.escape(part)+r"\n.*?(?=------------------------)",dmp)
         if not block:raise RuntimeError("Missing LP "+part)
-        spans=re.findall(r"(\\d+) \\.\\. (\\d+) linear super (\\d+)",block.group(0))
+        spans=re.findall(r"(\d+) \.\. (\d+) linear super (\d+)",block.group(0))
         if len(spans)!=1:raise RuntimeError("Unusual LP extent count for "+part)
         start,end,offset=map(int,spans[0])
         capacities[part]={"bytes":(end-start+1)*512,"physical_sector":offset}
@@ -151,9 +151,9 @@ def main():
       "super_bytes":raw.stat().st_size,
       "other_partitions":parts}
     result["free_group_bytes"]=result["main_a_group_max"]-result["current_allocated"]
-    (a.report/"build11-ext4-preflight.json").write_text(json.dumps(result,indent=2)+"\\n")
+    (a.report/"build11-ext4-preflight.json").write_text(json.dumps(result,indent=2)+"\n")
     for f in fstabs:
-        (a.report/("fstab-"+re.sub("[^a-zA-Z0-9]","_",f["source"])+".txt")).write_text("\\n".join(f["lines"])+"\\n")
+        (a.report/("fstab-"+re.sub("[^a-zA-Z0-9]","_",f["source"])+".txt")).write_text("\n".join(f["lines"])+"\n")
     print(json.dumps({k:v for k,v in result.items() if k not in ("all_fstab_sources","other_partitions","original_lp_bytes")},indent=2),flush=True)
 
 if __name__=="__main__":
