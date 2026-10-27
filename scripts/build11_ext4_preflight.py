@@ -14,7 +14,7 @@ def align(n,a):
 
 def extract_stock(archive, out):
     out.mkdir(parents=True,exist_ok=True)
-    required={"boot.img","vendor_boot.img","super.img"}
+    required={"boot.img","vendor_boot.img","vbmeta.img","super.img"}
     seen=set()
     verify_archive(archive)
     with tarfile.open(archive,mode="r|gz") as tar:
