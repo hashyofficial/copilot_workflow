@@ -112,7 +112,8 @@ def main():
     stock=a.work/FILENAME
     download_archive(stock,a.report/"download.json")
     original=a.work/"stock-images";extract_stock(stock,original)
-    # Reuse same downloaded ROM during later conversion by keeping archive on runner.
+    # The source archive has passed MD5; release disk space before sparse-to-raw conversion.
+    stock.unlink()
     infos={};fstabs=[]
     for name in ("boot.img","vendor_boot.img"):
         source=original/name;detail,blobs=ramdisk_blobs(source);detail["sha256"]=sha(source)
