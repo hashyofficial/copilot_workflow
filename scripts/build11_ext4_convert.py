@@ -46,8 +46,9 @@ def source_tree_size(mount):
             p=Path(root)/name
             info=p.lstat();count+=1
             if stat.S_ISREG(info.st_mode):block_bytes+=((info.st_size+4095)//4096)*4096
-    # Covers inode tables, xattrs, journal, directory slack and writable headroom.
-    guess=((int(block_bytes*1.17)+count*2048+256*1024*1024+4095)//4096)*4096
+    # Conservatively sized ext4: 10% data headroom plus 64MiB / partition.
+    # The stock super group cannot fit the first oversized 17% + 256MiB allocation.
+    guess=((int(block_bytes*1.10)+count*2048+64*1024*1024+4095)//4096)*4096
     return block_bytes,count,guess
 
 def scrub_root_ext4(root, before):
