@@ -1,0 +1,5 @@
+# Build 11 - HyperOS OS1.0.9.0.ULYMIXM Global on yunluo
+# NO APPS SELECTED YET. Build 11 removal is intentionally inactive.
+# User-approved APK source destinations (partition:/absolute/path/App.apk)
+# OR exact Android package IDs, one per line, go BELOW these comments.
+# Do not copy MIUI Build 10 APK destinations without checking Build 11 inventory.
