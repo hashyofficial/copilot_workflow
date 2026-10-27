@@ -1,0 +1,55 @@
+name: Build 11 HyperOS - Ext4 Boot and Super Feasibility (Read Only)
+on:
+  push:
+    branches: [build11/hyperos-global]
+    paths:
+      - .github/workflows/build11-ext4-preflight.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect-stock-boot-and-super:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      TEST_DIR: ${{ github.workspace }}/.build11-ext4-preflight
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python preflight before fetching stock firmware
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build11_source.py scripts/build11_apk_inventory.py scripts/build11_ext4_preflight.py
+          mkdir -p "$TEST_DIR/report"
+          df -h "$GITHUB_WORKSPACE"
+      - name: Install pinned Android sparse/LP tools and boot ramdisk readers
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils e2fsprogs cpio lz4 attr util-linux file python3 unzip
+          python3 scripts/inventory.py --install-tools
+      - name: Inspect verified stock boot.img, vendor_boot.img, fstab and LP group
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=ANDROID_HOME,GITHUB_WORKSPACE,TEST_DIR             python3 scripts/build11_ext4_preflight.py \
+              --work "$TEST_DIR/work" \
+              --report "$TEST_DIR/report"
+          sudo chown -R "$(id -u):$(id -g)" "$TEST_DIR/report"
+      - name: Summarize support without claiming ext4 boots
+        if: success()
+        run: |
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path(os.environ["TEST_DIR"])/"report/build11-ext4-preflight.json"
+          d=json.loads(p.read_text())
+          print("Stock fstab ext4 first-stage entries:",d["ext4_first_stage_support"])
+          print("Available LP group bytes:",d["free_group_bytes"])
+          print("The report is an audit; this workflow does NOT create flashable firmware.")
+          PY
+      - name: Upload stock compatibility and image sizing audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-hyperos-ext4-stock-preflight
+          path: ${{ github.workspace }}/.build11-ext4-preflight/report/
+          retention-days: 30
+          if-no-files-found: warn
