@@ -5,6 +5,8 @@ on:
     branches: [build11/hyperos-global]
     paths:
       - .github/workflows/build11-hyperos-inventory.yml
+      - scripts/build11_apk_inventory.py
+      - scripts/build11_source.py
   workflow_dispatch:
 
 permissions:
@@ -65,6 +67,8 @@ jobs:
           print("APK FILES:",summary["apk_files"])
           print("UNIQUE PACKAGE IDs:",summary["unique_package_ids"])
           print("APEX CONTAINERS:",summary["apex_containers"])
+          print("ZERO-BYTE APK PLACEHOLDERS:",summary["zero_byte_apk_placeholders"])
+          print("VALID NONEMPTY APK FILES:",summary["nonempty_apk_files"])
           print("ALL DETAILS: Actions artifact -> ALL_APPS_HYPEROS_BUILD11.txt/.tsv/.csv/.json")
           PY
       - name: Upload full APK names, package IDs, directories and destinations
