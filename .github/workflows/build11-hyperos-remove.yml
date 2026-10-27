@@ -1,0 +1,84 @@
+name: Build 11 HyperOS Global - TXT Driven Debloat (Guarded)
+
+# This workflow does NOT run until config/build11-remove-apps.txt is
+# explicitly updated with approved package IDs or exact APK paths.
+# Never copies MIUI Build 10 removal lists or hardcoded LP offsets.
+on:
+  push:
+    branches: [build11/hyperos-global]
+    paths:
+      - config/build11-remove-apps.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remove-approved-apps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      BUILD11_WORK: ${{ github.workspace }}/.build11-remove-work
+      REMOVE_TXT: ${{ github.workspace }}/config/build11-remove-apps.txt
+      REPORT: ${{ github.workspace }}/.build11-remove-work/report
+      OUTPUT: ${{ github.workspace }}/.build11-remove-work/output
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject empty/unapproved TXT before any firmware download
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build11_source.py scripts/build11_apk_inventory.py scripts/build11_remove_apps.py
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0,"scripts")
+          from build11_remove_apps import parse_user_txt
+          print("Approved TXT selectors:",parse_user_txt(Path("config/build11-remove-apps.txt")))
+          PY
+      - name: Install pinned Android tools and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip
+          python3 scripts/inventory.py --install-tools
+      - name: Rebuild fresh HyperOS stock super with only TXT-approved removals
+        run: |
+          set -euo pipefail
+          mkdir -p "$BUILD11_WORK" "$REPORT" "$OUTPUT"
+          sudo --preserve-env=ANDROID_HOME,GITHUB_WORKSPACE,BUILD11_WORK,REMOVE_TXT,REPORT,OUTPUT \
+            python3 scripts/build11_remove_apps.py \
+              --remove-txt "$REMOVE_TXT" \
+              --work "$BUILD11_WORK" \
+              --report "$REPORT" \
+              --out "$OUTPUT"
+          sudo chown -R "$(id -u):$(id -g)" "$REPORT" "$OUTPUT"
+      - name: Inspect offline manifest and output SHA256
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib
+          out=pathlib.Path(os.environ["OUTPUT"])
+          report=json.loads((out/"manifest.json").read_text())
+          assert report["lp_metadata_identical"]
+          assert report["untouched_regions_identical"]
+          assert report["surviving_metadata_identical"]
+          assert report["vbmeta"]["modified_flags"]==3
+          assert report["pieces"] and not report["flash_tested"]
+          assert (out/"vbmeta.img").exists()
+          print("Verified",len(report["pieces"]),"super image pieces + vbmeta.img")
+          PY
+      - name: Upload verified rebuilt super parts and patched vbmeta for manual assembly
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-hyperos-super-and-vbmeta
+          path: ${{ github.workspace }}/.build11-remove-work/output/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload removal audits even when a safety check fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-hyperos-removal-audit
+          path: ${{ github.workspace }}/.build11-remove-work/report/
+          retention-days: 30
+          if-no-files-found: warn
