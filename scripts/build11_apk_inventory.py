@@ -160,17 +160,23 @@ def inventory(archive, work, report):
                     if suffix in (".apex",".capex"):
                         apex_rows.append([part,part+":"+internal,full,name])
                         continue
-                    try:
-                        pkg,label=identity(aapt,path)
-                    except (RuntimeError, subprocess.TimeoutExpired) as e:
-                        pkg,label="UNPARSED","UNPARSED"
-                        errors.append(part+":"+internal+": "+str(e))
+                    size=path.stat().st_size
+                    if size==0:
+                        # HyperOS mi_ext uses zero-byte APK placeholders; NOT installed ZIP/APK packages.
+                        pkg,label,status="NO_PACKAGE_ZERO_BYTES","(zero-byte placeholder)","placeholder"
+                    else:
+                        try:
+                            pkg,label=identity(aapt,path)
+                            status="valid-apk"
+                        except (RuntimeError, subprocess.TimeoutExpired) as e:
+                            pkg,label,status="UNPARSED","UNPARSED","invalid-apk"
+                            errors.append(part+":"+internal+": "+str(e))
                     rows.append({"partition":part,"android_package_id":pkg,
                                  "app_name":label, "apk_filename":name,
                                  "apk_location":part+":"+internal,
                                  "device_destination":full,
                                  "app_folder":part+":"+str(PurePosixPath(internal).parent),
-                                 "size_bytes":path.stat().st_size,
+                                 "size_bytes":size,"parse_status":status,
                                  "split_or_base":"split" if name.startswith("split_") else "APK"})
             print(part,fs,"APKs so far:",len(rows),flush=True)
         except Exception as e:
@@ -181,7 +187,7 @@ def inventory(archive, work, report):
             shutil.rmtree(extracted,ignore_errors=True)
             mount.rmdir()
     columns=["app_name","android_package_id","apk_filename","partition",
-             "apk_location","device_destination","app_folder","split_or_base","size_bytes"]
+             "apk_location","device_destination","app_folder","split_or_base","size_bytes","parse_status"]
     rows.sort(key=lambda r:(r["partition"],r["apk_location"]))
     if not rows:
         errors.append("No APKs discovered: image/metadata decoding incorrect")
@@ -213,7 +219,10 @@ def inventory(archive, work, report):
     summary={"firmware":VERSION,"source_file":FILENAME,"stock_archive_md5":MD5,
              "raw_super_sha256":original_sha,"raw_super_size":raw.stat().st_size,
              "was_sparse":was_sparse,"apk_files":len(rows),
-             "unique_package_ids":len({r["android_package_id"] for r in rows if r["android_package_id"]!="UNPARSED"}),
+             "unique_package_ids":len({r["android_package_id"] for r in rows if r["parse_status"]=="valid-apk"}),
+             "nonempty_apk_files":sum(r["parse_status"]=="valid-apk" for r in rows),
+             "zero_byte_apk_placeholders":sum(r["parse_status"]=="placeholder" for r in rows),
+             "unparsed_nonempty_apks":sum(r["parse_status"]=="invalid-apk" for r in rows),
              "apex_containers":len(apex_rows),
              "partitions":fs_rows,"errors":errors,
              "apex_note":"Runtime APKs packaged INSIDE .apex/.capex files are not regular .apk filesystem paths; see apex-containers.tsv"}
