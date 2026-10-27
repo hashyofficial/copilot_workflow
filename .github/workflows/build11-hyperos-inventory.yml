@@ -1,0 +1,77 @@
+name: Build 11 HyperOS Global - Read Only Complete APK Inventory
+
+on:
+  push:
+    branches: [build11/hyperos-global]
+    paths:
+      - .github/workflows/build11-hyperos-inventory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-stock-super:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      BUILD11_WORK: ${{ github.workspace }}/.build11-work
+      STOCK: ${{ github.workspace }}/.build11-work/stock/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      REPORT: ${{ github.workspace }}/.build11-work/report
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Build 11 scripts before downloading firmware
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build11_source.py scripts/build11_apk_inventory.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from build11_source import VERSION,FILENAME,MD5
+          assert (VERSION,FILENAME,MD5)==(
+            "OS1.0.9.0.ULYMIXM",
+            "yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz",
+            "f8dbb84a10dc96a9d3ce9e78883e87f3")
+          print("Fresh official HyperOS Global only. No removal targets loaded.")
+          PY
+      - name: Install image tools and original Android build-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip
+          python3 scripts/inventory.py --install-tools
+          which aapt || true
+          ls "$ANDROID_HOME/build-tools"
+      - name: Download original HyperOS fastboot image and verify published MD5
+        run: |
+          set -euo pipefail
+          python3 scripts/build11_source.py --output "$STOCK" --report "$REPORT/download-sources.json"
+          echo "f8dbb84a10dc96a9d3ce9e78883e87f3  $STOCK" | md5sum -c -
+      - name: Scan EVERY populated super logical partition (read-only)
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=ANDROID_HOME,GITHUB_WORKSPACE,BUILD11_WORK,STOCK,REPORT \
+            python3 scripts/build11_apk_inventory.py \
+              --archive "$STOCK" --work "$BUILD11_WORK" --report "$REPORT"
+          sudo chown -R "$(id -u):$(id -g)" "$REPORT"
+      - name: Show inventory count and preview in log
+        if: success()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path(os.environ["REPORT"])
+          summary=json.loads((root/"SUMMARY.json").read_text())
+          assert summary["apk_files"]>0 and not summary["errors"]
+          print("APK FILES:",summary["apk_files"])
+          print("UNIQUE PACKAGE IDs:",summary["unique_package_ids"])
+          print("APEX CONTAINERS:",summary["apex_containers"])
+          print("ALL DETAILS: Actions artifact -> ALL_APPS_HYPEROS_BUILD11.txt/.tsv/.csv/.json")
+          PY
+      - name: Upload full APK names, package IDs, directories and destinations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-hyperos-global-complete-apk-inventory
+          path: ${{ github.workspace }}/.build11-work/report/
+          retention-days: 30
+          if-no-files-found: warn
