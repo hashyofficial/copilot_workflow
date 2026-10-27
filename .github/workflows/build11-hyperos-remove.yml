@@ -4,10 +4,6 @@ name: Build 11 HyperOS Global - TXT Driven Debloat (Guarded)
 # explicitly updated with approved package IDs or exact APK paths.
 # Never copies MIUI Build 10 removal lists or hardcoded LP offsets.
 on:
-  push:
-    branches: [build11/hyperos-global]
-    paths:
-      - config/build11-remove-apps.txt
   workflow_dispatch:
 
 permissions:
