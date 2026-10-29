@@ -90,7 +90,7 @@ jobs:
           from build12_google_mtk_extra5_targets import build12_targets,PRESERVE_APPS
           m=json.loads((pathlib.Path(os.environ["BUILD12_PRIVATE"])/"manifest.json").read_text())
           removed,_,protected,kept=build12_targets()
-          assert m["build"]=="11-fresh-google-mtk"
+          assert m["build"]=="12-fresh-google-mtk-extra5"
           assert m["source"]=="fresh MD5-verified original Xiaomi MIUI 14 Global"
           assert m["total_directories_removed"]==31
           assert set(x["location"] for x in m["excluded_folders"])==set(removed)
@@ -160,7 +160,7 @@ jobs:
               raise RuntimeError("Split ZIP reassembly SHA256 mismatch")
           (root/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["name"]+"\n" for x in parts))
           (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
-              "device":"yunluo","build":11,"zip_name":f.name,
+              "device":"yunluo","build":12,"zip_name":f.name,
               "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
               "parts":parts,"app_folders_removed":31,"google_folders_removed":20,"diagnostic_folders_removed":6,"additional_folders_removed":5,
               "photon_gallery_preinstalled":False,"mivideo_preinstalled":True,"miui_gallery_preinstalled":True,"added_apks":0,
