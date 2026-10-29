@@ -1,0 +1,243 @@
+name: MIUI 14 Build 11 - Fresh Stock Google and MTK Debloat
+
+# 20 Google + 6 MTK/diagnostic apps only, original MIUI14 Global source.
+# Preserve all other source apps including MIUI Gallery and Mi Video.
+# Publish persistent complete fastboot ZIP in rejoinable GitHub Release parts.
+on:
+  push:
+    branches: [build11/fresh-stock-google-mtk-release]
+    paths:
+      - .github/workflows/build11-fresh-stock-google-mtk-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD11_STOCK_ARCHIVE: ${{ github.workspace }}/.build11-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
+      BUILD11_PRIVATE: ${{ github.workspace }}/.build11-work/private-super-NOT-UPLOADED
+      BUILD11_REPORTS: ${{ github.workspace }}/.build11-work/report
+      ROM_NAME: RedmiPad_Yunluo_MIUI14_Build11_FreshStock_Google_MTK_Debloat_Fastboot.zip
+      ROM_RELEASE: yunluo-miui14-build11-fresh-google-mtk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the exact Build 11 app policy before downloading
+        run: |
+          set -euo pipefail
+          for script in scripts/build11_google_mtk_targets.py scripts/pack_super_build11_google_mtk.py scripts/repack_build11_google_mtk.py tests/test_build11_google_mtk_policy.py; do
+            test -s "$script" || { echo "::error::Missing Build 11 script $script"; exit 1; }
+          done
+          python3 -m py_compile scripts/build11_google_mtk_targets.py scripts/pack_super_build11_google_mtk.py scripts/repack_build11_google_mtk.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from build11_google_mtk_targets import build11_targets,GOOGLE,DIAGNOSTIC,PRESERVE_APPS
+          removed,ids,protected,kept=build11_targets()
+          assert len(GOOGLE)==20 and len(DIAGNOSTIC)==6 and len(removed)==26
+          assert not kept and protected==PRESERVE_APPS
+          print("Build 11 exact-only 26 original stock APK folder policy approved")
+          PY
+      - name: Install pinned Android image tools and EROFS utilities
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates erofs-utils attr util-linux file python3 unzip python3-pyflakes
+          python3 scripts/inventory.py --install-tools
+      - name: Check Python undefined names before any multi-gigabyte firmware build
+        run: |
+          set -euo pipefail
+          pyflakes scripts/repack_build11_google_mtk.py scripts/pack_super_build11_google_mtk.py scripts/build11_google_mtk_targets.py \
+            > "$RUNNER_TEMP/build11-pyflakes.txt" 2>&1 || true
+          if grep -E 'undefined name' "$RUNNER_TEMP/build11-pyflakes.txt"; then
+            echo "Undefined Python variable detected; refusing to waste runner time" >&2
+            exit 1
+          fi
+          echo "No undefined Python names in Build 11 scripts"
+      - name: Prove EROFS excludes individual library files, without removing parent directory
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/source/lib64" "$TMP/mount"
+          echo remove > "$TMP/source/lib64/libOrphanJNI.so"
+          echo preserve > "$TMP/source/lib64/libCore.so"
+          mkfs.erofs -T 1700000000 --exclude-path=lib64/libOrphanJNI.so "$TMP/probe.erofs" "$TMP/source"
+          fsck.erofs "$TMP/probe.erofs"
+          sudo mount -t erofs -o ro,loop "$TMP/probe.erofs" "$TMP/mount"
+          test ! -e "$TMP/mount/lib64/libOrphanJNI.so"
+          test "$(cat "$TMP/mount/lib64/libCore.so")" = preserve
+          sudo umount "$TMP/mount"
+          echo "Verified individual .so exclusion leaves shared lib64 directory intact"
+      - name: Download pinned original MIUI 14 Global fastboot ROM and verify MD5
+        run: |
+          mkdir -p "$BUILD11_REPORTS" "$(dirname "$BUILD11_STOCK_ARCHIVE")"
+          python3 scripts/download.py --output "$BUILD11_STOCK_ARCHIVE" --report "$BUILD11_REPORTS/stock-download.json"
+          echo "4003dcb1a4db404e2768801fdb429c4a  $BUILD11_STOCK_ARCHIVE" | md5sum -c -
+      - name: Rebuild stock super with EXACTLY 26 app folders excluded
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=BUILD11_STOCK_ARCHIVE,BUILD11_PRIVATE,BUILD11_REPORTS,GITHUB_WORKSPACE,ANDROID_HOME \
+            python3 scripts/pack_super_build11_google_mtk.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD11_PRIVATE" "$BUILD11_REPORTS"
+          python3 - <<'PY'
+          import json,os,pathlib,sys
+          sys.path.insert(0,"scripts")
+          from build11_google_mtk_targets import build11_targets,PRESERVE_APPS
+          m=json.loads((pathlib.Path(os.environ["BUILD11_PRIVATE"])/"manifest.json").read_text())
+          removed,_,protected,kept=build11_targets()
+          assert m["build"]=="11-fresh-google-mtk"
+          assert m["source"]=="fresh MD5-verified original Xiaomi MIUI 14 Global"
+          assert m["total_directories_removed"]==26
+          assert set(x["location"] for x in m["excluded_folders"])==set(removed)
+          assert m["protected_packages"]==PRESERVE_APPS
+          assert m["gallery_preserved"] and m["additional_apks_installed"]==0
+          assert m["build11_extra_files_removed"]==0 and m["build11_extra_bytes_removed"]==0
+          assert m["lp_metadata_preserved"] and m["other_regions_unchanged"]
+          assert m["haptic_framework_untouched"]
+          print("Verified 26 exact removals and all other files preserved, including stock Gallery and Mi Video")
+          PY
+      - name: Replace only super and vbmeta in complete original fastboot firmware and recalculate CRC lists
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          python3 scripts/repack_build11_google_mtk.py \
+            --archive "$BUILD11_STOCK_ARCHIVE" \
+            --artifact "$BUILD11_PRIVATE" \
+            --zip "$RUNNER_TEMP/packaged/$ROM_NAME" \
+            --report "$BUILD11_REPORTS"
+      - name: Verify complete fastboot ZIP and split into rejoinable GitHub Release assets
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packaged"
+          sha256sum "$ROM_NAME" > ZIP_SHA256.txt
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,zipfile
+          root=pathlib.Path(os.environ["RUNNER_TEMP"])/"packaged"
+          f=root/os.environ["ROM_NAME"]
+          report=json.loads((pathlib.Path(os.environ["BUILD11_REPORTS"])/"VERIFICATION.json").read_text())
+          assert report["app_folders_removed"]==26 and report["stock_apps_specifically_verified"]==4
+          assert report["added_apks"]==0 and report["gallery_preserved"] is True and report["mivideo_preserved"] is True
+          assert report["calendar_restored"] is True
+          assert f.stat().st_size==report["firmware_zip_bytes"]
+          assert hashlib.file_digest(f.open("rb"),"sha256").hexdigest()==report["firmware_zip_sha256"]
+          with zipfile.ZipFile(f) as z:
+              assert z.testzip() is None
+              keys=z.namelist()
+              for suffix in ("/images/super.img","/images/vbmeta.img","/images/crclist.txt",
+                             "/images/sparsecrclist.txt","/flash_all.sh"):
+                  assert sum(n.endswith(suffix) for n in keys)==1,suffix
+          size=f.stat().st_size
+          # GitHub Release asset max is 2GiB. Use two parts if possible, else three.
+          asset_limit=1_950_000_000
+          part_count=max(2,(size+asset_limit-1)//asset_limit)
+          piece=(size+part_count-1)//part_count
+          assert piece<=asset_limit, "Firmware part exceeds conservative GitHub asset limit"
+          names=[f.name+f".{i:03d}" for i in range(1,part_count+1)]
+          with f.open("rb") as source:
+              for index,name in enumerate(names):
+                  out=root/name
+                  length=piece if index<part_count-1 else size-piece*(part_count-1)
+                  with out.open("wb") as sink:
+                      while length:
+                          chunk=source.read(min(8*1024*1024,length))
+                          if not chunk:raise RuntimeError("Unexpected ZIP truncation")
+                          sink.write(chunk);length-=len(chunk)
+          if sum((root/name).stat().st_size for name in names)!=size:
+              raise RuntimeError("Firmware parts size mismatch")
+          digest=hashlib.sha256()
+          parts=[]
+          for name in names:
+              ph=hashlib.sha256()
+              with (root/name).open("rb") as inp:
+                  while chunk:=inp.read(8*1024*1024):
+                      digest.update(chunk);ph.update(chunk)
+              parts.append({"name":name,"bytes":(root/name).stat().st_size,"sha256":ph.hexdigest()})
+          if digest.hexdigest()!=report["firmware_zip_sha256"]:
+              raise RuntimeError("Split ZIP reassembly SHA256 mismatch")
+          (root/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["name"]+"\n" for x in parts))
+          (root/"DOWNLOAD_MANIFEST.json").write_text(json.dumps({
+              "device":"yunluo","build":11,"zip_name":f.name,
+              "zip_sha256":report["firmware_zip_sha256"],"zip_bytes":size,
+              "parts":parts,"app_folders_removed":26,"google_folders_removed":20,"diagnostic_folders_removed":6,
+              "photon_gallery_preinstalled":False,"mivideo_preinstalled":True,"miui_gallery_preinstalled":True,"added_apks":0,
+              "extra_native_jni_libraries_removed":0,
+              "miravision_jni_preserved":True,
+          },indent=2)+"\n")
+          print(part_count,"firmware parts verified; ZIP SHA256",report["firmware_zip_sha256"])
+          PY
+          rm "$ROM_NAME"
+      - name: Publish Build 11 full MIUI 14 fastboot firmware on GitHub Release
+        run: |
+          set -euo pipefail
+          if gh release view "$ROM_RELEASE" -R "$GH_REPO" >/dev/null 2>&1; then
+            echo "::error::Build 11 release tag already exists, refusing overwrite"
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/build11-notes.md" <<'EOF'
+          ## Redmi Pad yunluo — MIUI 14 Global Build 11 (Google + Diagnostic Debloat)
+
+          **Fresh original firmware:** V14.0.4.0.TLYMIXM (Android 13).
+          Original Xiaomi fastboot archive MD5 4003dcb1a4db404e2768801fdb429c4a.
+          Built from scratch from the original archive, not Build 9 or Build 11.
+          EROFS preserved, no ext4 conversion.
+
+          **Exactly 26 original app folders removed:** 20 Google standalone apps
+          (Drive, Meet, News, Podcasts, Photos, Videos, YouTube Music, Google One,
+          Maps, YouTube, Location History, Assistant, Velvet/Google Search, two
+          Hotword Enrollment packages, Digital Wellbeing, Google Feedback,
+          Print Recommendation, Google TTS, and TalkBack), and six diagnostics
+          (MediaTek EngineerMode, YGPS, LocationEM2, MDMLSample, CatchLog,
+          DebugLoggerUI). All original APK identities and 26 folders were
+          verified against the source firmware during the build.
+
+          **Everything else remains from stock:** MIUI Gallery and Mi Video,
+          MIUI Security Center/Cleaner, Play Store/Services/framework,
+          Calendar, Contacts, Chrome, WebView, MiraVision and JNI, MediaTek
+          hardware services, Android Mainline/APEX. No extra standalone .so,
+          overlay, XML or config removed. No third-party APKs added.
+          Accessibility screen reader and Google speech synthesis are removed
+          intentionally and will need reinstalling if required.
+
+          **Full fastboot package:** Original Xiaomi flashing scripts and other
+          partition images retained; rebuilt super.img, patched main vbmeta.img
+          for unlocked bootloaders (AVB flags=3), regenerated and validated
+          crclist.txt + sparsecrclist.txt. Original LP extent geometry and
+          retained-file owners/modes/SELinux labels checked; full ZIP and every
+          split fragment verified by SHA256. Device boot is NOT yet confirmed.
+
+          **How to download:** Download every .zip.001/.002/.003 (or all numbered
+          .zip fragments listed in DOWNLOAD_MANIFEST.json), plus ZIP_SHA256.txt
+          and PARTS_SHA256.txt. GitHub limits individual Release assets to 2 GiB;
+          the numbered parts together are ONE complete fastboot firmware ZIP.
+          On Linux/macOS, from the folder containing the downloaded files:
+
+              cat RedmiPad_Yunluo_MIUI14_Build11_FreshStock_Google_MTK_Debloat_Fastboot.zip.0* > RedmiPad_Yunluo_MIUI14_Build11_FreshStock_Google_MTK_Debloat_Fastboot.zip
+              sha256sum -c ZIP_SHA256.txt
+
+          On Windows PowerShell, concatenate numbered fragments in binary order
+          with a stream-based script (do not decode as text). Verify the SHA256
+          with Get-FileHash and compare to ZIP_SHA256.txt.
+
+          **Safety:** Unlocked bootloader required. Use original fastboot
+          scripts only when understood; stock flash_all can wipe userdata.
+          NEVER use flash_all_lock. This release passed offline verification,
+          NOT device boot verification. Preserve a known-good backup.
+          EOF
+          cd "$RUNNER_TEMP/packaged"
+          gh release create "$ROM_RELEASE" "$ROM_NAME".0* \
+            ZIP_SHA256.txt PARTS_SHA256.txt DOWNLOAD_MANIFEST.json \
+            -R "$GH_REPO" --target "$GITHUB_SHA" \
+            --title "Redmi Pad MIUI 14 - Build 11 (26 Google and MediaTek Diagnostic Apps Removed)" \
+            --notes-file "$RUNNER_TEMP/build11-notes.md" --latest=false
+      - name: Upload small Build 11 review and offline verification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-build11-stock-google-mtk-verification
+          path: ${{ github.workspace }}/.build11-work/report/
+          retention-days: 30
+          if-no-files-found: warn
