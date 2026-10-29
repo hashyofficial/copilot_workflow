@@ -95,6 +95,7 @@ def build():
         package_ids=dict(expected_packages)
         # Exactly 26 allowlisted folders, no extra discovery or generic debloat.
         exact_packages={}
+        extras={}
         if len(trial)!=26 or set(trial)!=(set(GOOGLE)|set(DIAGNOSTIC)):
             raise RuntimeError("Build 11 must remove precisely the approved 26 apps")
         report("build11-removal-plan.json",json.dumps(sorted(trial),indent=2)+"\n")
