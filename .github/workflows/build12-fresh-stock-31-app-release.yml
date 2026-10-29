@@ -23,7 +23,7 @@ jobs:
       BUILD12_STOCK_ARCHIVE: ${{ github.workspace }}/.build12-work/stock/yunluo_global_images_V14.0.4.0.TLYMIXM_20231207.0000.00_13.0_global_4003dcb1a4.tgz
       BUILD12_PRIVATE: ${{ github.workspace }}/.build12-work/private-super-NOT-UPLOADED
       BUILD12_REPORTS: ${{ github.workspace }}/.build12-work/report
-      ROM_NAME: RedmiPad_Yunluo_MIUI14_Build11_FreshStock_Google_MTK_Debloat_Fastboot.zip
+      ROM_NAME: RedmiPad_Yunluo_MIUI14_Build12_FreshStock_31Apps_Debloat_Fastboot.zip
       ROM_RELEASE: yunluo-miui14-build12-fresh-31-app-debloat
     steps:
       - uses: actions/checkout@v4
